@@ -1,4 +1,4 @@
-# Voice Flow Security Rubric
+# Head Canon Security Rubric
 
 ## Purpose
 Use this rubric before calling the app "secure enough" for daily use.
@@ -98,7 +98,7 @@ Score `2`
 
 Evidence
 
-- inspect [APIKeyStore.swift](/Users/worldbuilder/Desktop/Voice%20Flow/Sources/VoiceFlow/Security/APIKeyStore.swift)
+- inspect [APIKeyStore.swift](/Users/worldbuilder/Desktop/Head%20Canon/Sources/HeadCanon/Security/APIKeyStore.swift)
 - search the repo for secret logging patterns
 - validate key add, replace, remove, and invalid-key flows
 
@@ -125,11 +125,11 @@ Score `2`
 
 Evidence
 
-- inspect [AudioCaptureService.swift](/Users/worldbuilder/Desktop/Voice%20Flow/Sources/VoiceFlow/Audio/AudioCaptureService.swift)
-- inspect [VoiceFlowModel.swift](/Users/worldbuilder/Desktop/Voice%20Flow/Sources/VoiceFlow/App/VoiceFlowModel.swift)
+- inspect [AudioCaptureService.swift](/Users/worldbuilder/Desktop/Head%20Canon/Sources/HeadCanon/Audio/AudioCaptureService.swift)
+- inspect [HeadCanonModel.swift](/Users/worldbuilder/Desktop/Head%20Canon/Sources/HeadCanon/App/HeadCanonModel.swift)
 - inspect settings and menu-bar transcript actions
 - force-quit during recording and check for leftover app recording files
-- compare implemented retention behavior against [V1_SPEC.md](/Users/worldbuilder/Desktop/Voice%20Flow/docs/V1_SPEC.md)
+- compare implemented retention behavior against [V1_SPEC.md](/Users/worldbuilder/Desktop/Head%20Canon/docs/V1_SPEC.md)
 
 ### 4. Text Insertion Safety
 Goal: never send dictated text somewhere surprising or unsafe.
@@ -154,7 +154,7 @@ Score `2`
 
 Evidence
 
-- inspect [TextInsertionService.swift](/Users/worldbuilder/Desktop/Voice%20Flow/Sources/VoiceFlow/Insertion/TextInsertionService.swift)
+- inspect [TextInsertionService.swift](/Users/worldbuilder/Desktop/Head%20Canon/Sources/HeadCanon/Insertion/TextInsertionService.swift)
 - manually test:
   - password field
   - TextEdit
@@ -191,9 +191,9 @@ Score `2`
 
 Evidence
 
-- inspect [OpenAIBoundedTranscriptionBackend.swift](/Users/worldbuilder/Desktop/Voice%20Flow/Sources/VoiceFlow/Transcription/OpenAIBoundedTranscriptionBackend.swift)
+- inspect [OpenAIBoundedTranscriptionBackend.swift](/Users/worldbuilder/Desktop/Head%20Canon/Sources/HeadCanon/Transcription/OpenAIBoundedTranscriptionBackend.swift)
 - inspect onboarding/settings copy
-- inspect error handling in [VoiceFlowModel.swift](/Users/worldbuilder/Desktop/Voice%20Flow/Sources/VoiceFlow/App/VoiceFlowModel.swift)
+- inspect error handling in [HeadCanonModel.swift](/Users/worldbuilder/Desktop/Head%20Canon/Sources/HeadCanon/App/HeadCanonModel.swift)
 - validate first-run flow in the running app:
   - user sees off-device disclosure
   - user cannot reasonably miss disclosure before first transcription
@@ -224,13 +224,13 @@ Score `2`
 
 Evidence
 
-- inspect [build_app_bundle.sh](/Users/worldbuilder/Desktop/Voice%20Flow/Scripts/build_app_bundle.sh)
-- inspect [verify_dist_app.sh](/Users/worldbuilder/Desktop/Voice%20Flow/Scripts/verify_dist_app.sh)
+- inspect [build_app_bundle.sh](/Users/worldbuilder/Desktop/Head%20Canon/Scripts/build_app_bundle.sh)
+- inspect [verify_dist_app.sh](/Users/worldbuilder/Desktop/Head%20Canon/Scripts/verify_dist_app.sh)
 - run:
 
 ```bash
 swift test
-VOICEFLOW_CODESIGN_IDENTITY="Developer ID Application: <Name>" Scripts/build_app_bundle.sh
+HEAD_CANON_CODESIGN_IDENTITY="Developer ID Application: <Name>" Scripts/build_app_bundle.sh
 Scripts/verify_dist_app.sh
 ```
 

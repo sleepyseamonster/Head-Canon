@@ -4,23 +4,23 @@
 import PackageDescription
 
 let package = Package(
-    name: "Voice Flow",
+    name: "Head Canon",
     platforms: [
         .macOS(.v14),
     ],
     products: [
         .executable(
-            name: "VoiceFlow",
-            targets: ["VoiceFlow"]
+            name: "HeadCanon",
+            targets: ["HeadCanon"]
         ),
     ],
     targets: [
         .executableTarget(
-            name: "VoiceFlow"
+            name: "HeadCanon"
         ),
         .testTarget(
-            name: "VoiceFlowTests",
-            dependencies: ["VoiceFlow"]
+            name: "HeadCanonTests",
+            dependencies: ["HeadCanon"]
         ),
     ],
     swiftLanguageModes: [.v6]
