@@ -1,0 +1,2 @@
+
+{"timestamp":"2026-05-16T14:54:53Z","failure_class":"permission/readiness","summary":"Accessibility remains pending in installed runtime","bundle_path":"/Applications/HeadCanon.app","target_app":"TextEdit_or_unknown","observed":"Repeated TCC access requests with no granted state","suspected_cause":"","evidence":[],"mitigation_attempted":"Reset TCC, instructed installed-app-only flow, added diagnostics","status":"open"}
