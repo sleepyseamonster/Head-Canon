@@ -1,134 +1,119 @@
 # Current Checkpoint
 
 ## Product Definition
-`Head Canon` should be a local-first macOS dictation utility with one dependable core loop:
+`Head Canon` is a local-first macOS dictation utility with one core loop:
 
 1. invoke from anywhere with a global hotkey
-2. show immediate visible recording state
+2. show immediate recording or processing state
 3. capture bounded microphone audio
 4. transcribe it quickly
-5. insert text into the currently focused app
+5. insert text into the intended target safely
 
-This product is not a dashboard, not a general AI workspace, and not a vague speech experiment.
-It is a utility. The entire project should be judged by whether the installed app can complete that loop reliably and fast enough to feel ambient.
+The project should be judged by whether the installed app at `/Applications/HeadCanon.app` can complete that loop reliably and quickly enough to feel ambient.
 
 ## Current Audit
-What exists:
+What exists now:
 
-- installed app bundle at `/Applications/HeadCanon.app`
-- microphone and accessibility onboarding UI
+- installed app target at `/Applications/HeadCanon.app`
+- microphone and Accessibility onboarding
 - keychain-backed OpenAI API key storage
 - persisted preferences
-- bounded audio capture service
-- request-based OpenAI transcription backend
-- accessibility-based insertion service plus app-level clipboard transport
-- floating recording/transcribing status overlay
-- release-time versus insert-time insertion diagnostics
-- in-memory latency timings and backend metadata visible in Settings for the latest attempt
-- immediate processing-state transition on hotkey release
-- trimmed recording-finalization and request-start hot path
-- streamed transcription with automatic fallback to standard bounded requests
+- bounded audio capture
+- standard request-based OpenAI transcription backend
+- direct AX insertion for strong native targets
+- clipboard-based insertion for opaque editors such as `Codex`
+- release-time and insert-time insertion routing reports
+- persistent local diagnostics under `~/Library/Application Support/HeadCanon/diagnostics/`
+- repo-local diagnostics reader at `Scripts/diagnostics.swift`
+- manual recovery through `pasteLastTranscript()`
+- one guarded retry for transient transport failures
 
-What the current source strongly suggests:
+What the latest installed-app evidence says:
 
-- the largest remaining delay is probably the transcription request/response leg, not hotkey handling or insertion
-- the app now records enough in-memory timing and backend metadata to separate local delay from request time
-- at least one recent installed-app run already showed a large `request start -> response complete` gap on a very small clip, which reinforces that backend time is the main remaining suspect
-- those diagnostics are still trapped in memory and the Settings UI, so terminal inspection still depends on screenshots or manual copy/export
-- the repo default is still `gpt-4o-mini-transcribe`, and model choice should remain evidence-driven
+- the current bounded path is materially healthier than the earlier slow baseline
+- recent `20`-attempt summary on `gpt-4o-mini-transcribe` shows:
+  - failures: `8`
+  - `request -> response p50`: `1751 ms`
+  - `request -> response p95`: `30158 ms`
+  - `release -> inserted p50`: `1719 ms`
+  - `release -> inserted p95`: `2498 ms`
+- the current success path is still strong, but the tail is not
+- the current default path is `gpt-4o-mini-transcribe` plus `Standard Completed Recording`
+- the current failure profile is split evenly between:
+  - hard transcription timeouts near `30s`
+  - `Codex` insertion safety blocks after successful transcription when focus changes before paste fallback completes
+- the strongest recent run set is still mostly `Codex` warm turns, so the current numbers should not be treated as a complete app-matrix result yet
+- the immediate next question is not model choice; it is whether timeout cancellation and `Codex` focus-drift fixes can stabilize the bounded path without adding mess
 
 ## Current Blockers
-1. `persistent diagnostics gap`
-   - the app records useful timing and backend metadata, but only in memory
-   - there is no local append-only attempt log that can be read from the terminal
-2. `backend observability gap`
-   - the UI shows the latest attempt, but there is no persistent file-backed source of truth for repeated speed runs
-   - the current workflow still depends on screenshots or manual UI inspection
-3. `request/response bottleneck`
-   - current real-use evidence points to the transcription request leg as the dominant remaining delay
-   - the app now needs persistent logs to prove whether a slow turn used streaming, fallback, or just waited on the server
-4. `model-default ambiguity`
-   - the product direction docs are not fully aligned on whether `gpt-4o-mini-transcribe` or `gpt-4o-transcribe` should be the baseline
-   - that choice should be locked only after local-path latency is measured and trimmed
-
-Observed benchmark example:
-
-- one recent installed-app run showed about `5.98s` in `request start -> response complete` for a roughly `1.76s` / `45 KB` clip
-- that is not enough data to lock a backend decision, but it is enough to justify making persistent request metadata the next concrete work item
-
-## Audit Of The Old Plan
-What the old plan got right:
-
-- it kept the installed app as the source of truth
-- it treated truncation and insertion reliability as real product risks
-- it forced explicit failure classification
-
-What the old plan was missing:
-
-- a phase-by-phase latency budget
-- a distinction between “feels faster” and “is actually faster”
-- a no-regret quick-wins phase
-- separate treatment for `TextEdit` versus `Codex`
-- a hard gate before jumping to streaming or realtime backend work
-- a benchmark protocol for cold versus warm turns and repeated runs
-- explicit regression gates so speed work does not silently weaken safety
-- a persistent local diagnostics log and repo-local read path
-
-What the old plan now also overstated:
-
-- several local hot-path cuts as if they were still future work
-- streamed transcription as a hypothetical experiment instead of a path that is already in the repo with fallback
+1. `timeout-path defect`
+   - some requests still fail at the app-level `30s` timeout
+   - the in-flight request path needs explicit cancellation rather than more retry layering
+2. `codex focus-drift failures`
+   - some turns transcribe successfully but fail the paste safety check because the focused target changed before paste completed
+3. `model decision not yet locked`
+   - `AGENTS.md` still names `gpt-4o-transcribe` as the initial priority, but the current healthy default is `gpt-4o-mini-transcribe`
+   - that should become an explicit measured decision
+4. `architecture decision still pending`
+   - it is not yet clear whether the bounded path is “done enough” or whether realtime/local backend work is still worth the complexity
+5. `rollback discipline still implicit`
+   - the docs need to keep treating the current bounded baseline as a known-good snapshot
+   - any retry, model, or architecture experiment should be able to fall back to that state cleanly
 
 ## Rules For The Next Pass
-Use these rules during the next latency pass:
-
-1. Test only the installed app at `/Applications/HeadCanon.app`.
-2. Do not switch bundle paths during the same checkpoint.
-3. Preserve the working `TextEdit` path while improving `Codex` and other opaque editors.
-4. Track `TextEdit` and `Codex` separately.
-5. Every failure must be classified into exactly one stage:
-   - hotkey did not fire
-   - recording did not start
-   - recording did not finalize
-   - transcription request was delayed locally
-   - transcription request failed remotely
-   - insertion context was insufficient
-   - insertion transport was slow or failed
-   - app misreported permission or readiness state
-6. Each checkpoint note must include:
-   - what changed
-   - what was measured
-   - what actually happened
-   - what that rules out
-   - the next highest-signal step
-7. Every timing claim should note whether it came from a cold turn, a warm turn, or repeated warm runs.
-8. Do not move to backend experiments until the bounded local path has been measured and trimmed first.
-9. The Settings panel is a viewer, not the canonical diagnostics store.
-10. Default diagnostics must remain metadata-only and local-first.
-
-Reference docs for this pass:
-
-- [EXECUTION_PLAN.md](/Users/worldbuilder/Desktop/Head%20Canon/docs/EXECUTION_PLAN.md)
-- [USABILITY_CHECKLIST.md](/Users/worldbuilder/Desktop/Head%20Canon/docs/USABILITY_CHECKLIST.md)
+1. Test only `/Applications/HeadCanon.app`.
+2. Do not test `dist/HeadCanon.app`.
+3. Preserve the working `TextEdit` path while improving `Codex`.
+4. Use the persistent diagnostics log as the source of truth, not screenshots.
+5. Optimize for `p95` and failure rate now, not just `p50`.
+6. Keep the stable bounded path separate from realtime or local-backend experiments.
+7. Every failure must be classified into exactly one stage:
+   - `permission/readiness`
+   - `hotkey delivery`
+   - `recording start`
+   - `recording finalization`
+   - `transcription request`
+   - `transcription quality`
+   - `insertion context`
+   - `insertion transport`
+   - `safety policy block`
 
 ## Immediate Next Steps
-1. Add a diagnostics record model and store under `Sources/HeadCanon/Diagnostics/`.
-2. Append one metadata-only JSONL record per terminal-state dictation attempt under `Application Support/HeadCanon/diagnostics/`.
-3. Add a `latest.json` fast-path artifact plus bounded rotation for history files.
-4. Add a repo-local reader script so the latest attempt and recent summaries can be inspected from the terminal.
-5. Only after that, resume repeated `TextEdit` / `Codex` speed runs using the file-backed log as the source of truth.
-6. If request time is still dominant after that evidence is easy to inspect, decide whether to keep the current streamed-with-fallback path, drop back to standard bounded requests, compare models, or move toward realtime.
+1. Lock the current bounded baseline:
+   - `/Applications/HeadCanon.app`
+   - `gpt-4o-mini-transcribe`
+   - `Standard Completed Recording`
+2. Fix timeout cancellation cleanly and retest the bounded path.
+3. Instrument and tighten the `Codex` focus-drift path without weakening insertion safety.
+4. After those fixes, run the longer installed-app soak test:
+   - `30-50` warm short-phrase turns in `Codex`
+   - `10` turns in `TextEdit`
+   - `5` turns in one browser target
+5. Use `Scripts/diagnostics.swift` to capture:
+   - success rate
+   - `request -> response p50`
+   - `request -> response p95`
+   - `release -> inserted p50`
+   - `release -> inserted p95`
+   - dominant failure reason
+6. If the bounded path still looks healthy after those fixes, run the controlled bounded model comparison between:
+   - `gpt-4o-mini-transcribe`
+   - `gpt-4o-transcribe`
+7. Include one transcript-quality note in the model comparison so speed is not the only decision input.
+8. Only then decide whether to:
+   - keep the bounded path and stop
+   - prototype realtime transcription
+   - prototype `whisper.cpp`
 
-## Definition Of “Going Smoother”
-The project will go smoother when each checkpoint has:
+## Definition Of A Good Next Checkpoint
+The next checkpoint should include:
 
-- one bundle path
-- one clear latency question
-- one measured before/after result
-- one explicit `TextEdit` comparison
-- one explicit `Codex` comparison
-- one note about cold versus warm behavior
-- one terminal-readable diagnostics artifact
-- one next step that follows from evidence
-
-Until then, backend speculation is mostly noise.
+- one locked installed bundle path
+- one clear bounded baseline definition
+- one explicit result for the timeout-cancellation fix
+- one explicit result for the `Codex` focus-drift fix
+- one longer run summary by app class
+- `p50`, `p95`, and failure rate from the persistent diagnostics log
+- one note on whether transcript quality stayed acceptable
+- one explicit statement about whether the remaining pain is acceptable bounded-path variance or a reason to escalate architecture work
+- one next step derived from that evidence

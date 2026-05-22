@@ -17,14 +17,14 @@ struct DictationAttemptTimingRecord: Codable, Equatable {
     let hotkeyPressedAt: Date?
     let recordingStartedAt: Date?
     let hotkeyReleasedAt: Date?
-    let processingStateShownAt: Date?
+    let finalizingStateShownAt: Date?
     let recordingFinalizedAt: Date?
     let transcriptionRequestStartedAt: Date?
     let transcriptionResponseCompletedAt: Date?
     let insertionCompletedAt: Date?
     let stopTrigger: String?
     let pressToRecordingStartDurationMS: Int?
-    let releaseToProcessingStateDurationMS: Int?
+    let releaseToFinalizingStateDurationMS: Int?
     let releaseToFinalizedDurationMS: Int?
     let finalizedToRequestStartDurationMS: Int?
     let requestToResponseDurationMS: Int?
@@ -50,6 +50,11 @@ struct DictationAttemptBackendRecord: Codable, Equatable {
     let requestID: String?
     let openAIProcessingMS: Int?
     let responseContentType: String?
+    let responseHeadersReceivedMS: Int?
+    let transportFailureStage: String?
+    let networkErrorDomain: String?
+    let networkErrorCode: Int?
+    let networkErrorCodeName: String?
 }
 
 struct DictationAttemptInsertionRecord: Codable, Equatable {
@@ -82,8 +87,13 @@ struct DictationAttemptFailureRecord: Codable, Equatable {
     let message: String
 }
 
+struct DictationAttemptClipboardRecoveryRecord: Codable, Equatable {
+    let transcriptCopied: Bool
+    let reason: String
+}
+
 struct DictationAttemptRecord: Codable, Equatable {
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     let schemaVersion: Int
     let attemptID: UUID
@@ -99,4 +109,5 @@ struct DictationAttemptRecord: Codable, Equatable {
     let releaseTimeInsertion: DictationAttemptInsertionRecord?
     let insertion: DictationAttemptInsertionRecord?
     let failure: DictationAttemptFailureRecord?
+    let clipboardRecovery: DictationAttemptClipboardRecoveryRecord?
 }

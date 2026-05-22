@@ -239,7 +239,7 @@ struct SettingsRootView: View {
                         .fixedSize(horizontal: false, vertical: true)
 
                     Toggle(
-                        "Use paste fallback when direct insertion fails",
+                        "Allow paste-based insertion when required",
                         isOn: Binding(
                             get: { model.preferences.pasteFallbackEnabled },
                             set: { model.preferences.pasteFallbackEnabled = $0 }
@@ -628,8 +628,8 @@ struct SettingsRootView: View {
             diagnosticsFact("Recording Started At", formatted(report.recordingStartedAt))
             diagnosticsFact("Press To Recording Start", formattedDuration(report.pressToRecordingStartDuration))
             diagnosticsFact("Hotkey Released At", formatted(report.hotkeyReleasedAt))
-            diagnosticsFact("Processing State Shown At", formatted(report.processingStateShownAt))
-            diagnosticsFact("Release To Processing State", formattedDuration(report.releaseToProcessingStateDuration))
+            diagnosticsFact("Finalizing State Shown At", formatted(report.finalizingStateShownAt))
+            diagnosticsFact("Release To Finalizing State", formattedDuration(report.releaseToFinalizingStateDuration))
             diagnosticsFact("Recording Finalized At", formatted(report.recordingFinalizedAt))
             diagnosticsFact("Release To Recording Finalized", formattedDuration(report.releaseToFinalizedDuration))
             diagnosticsFact("Transcription Request Started At", formatted(report.transcriptionRequestStartedAt))
@@ -651,6 +651,11 @@ struct SettingsRootView: View {
             diagnosticsFact("Transcription Request ID", report.transcriptionRequestID ?? "Unknown")
             diagnosticsFact("OpenAI Processing Time", formattedMilliseconds(report.transcriptionProcessingMS))
             diagnosticsFact("Response Content Type", report.transcriptionResponseContentType ?? "Unknown")
+            diagnosticsFact("Response Headers Received", formattedMilliseconds(report.transcriptionResponseHeadersReceivedMS))
+            diagnosticsFact("Transport Failure Stage", report.transcriptionTransportFailureStage ?? "Unknown")
+            diagnosticsFact("Network Error Domain", report.transcriptionNetworkErrorDomain ?? "Unknown")
+            diagnosticsFact("Network Error Code", report.transcriptionNetworkErrorCode.map(String.init) ?? "Unknown")
+            diagnosticsFact("Network Error Code Name", report.transcriptionNetworkErrorCodeName ?? "Unknown")
         }
     }
 

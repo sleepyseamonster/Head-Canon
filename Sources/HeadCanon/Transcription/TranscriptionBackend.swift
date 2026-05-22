@@ -20,6 +20,11 @@ enum TranscriptionRequestMode: String, Equatable {
     }
 }
 
+enum TranscriptionTransportFailureStage: String, Equatable {
+    case awaitingResponseHeaders
+    case readingResponseBody
+}
+
 struct TranscriptionResponseMetadata: Equatable {
     let requestMode: TranscriptionRequestMode
     let fellBackFromStreaming: Bool
@@ -27,6 +32,21 @@ struct TranscriptionResponseMetadata: Equatable {
     let requestID: String?
     let openAIProcessingMS: Int?
     let contentType: String?
+    let responseHeadersReceivedMS: Int?
+}
+
+struct TranscriptionFailureContext: Equatable {
+    let requestMode: TranscriptionRequestMode
+    let fellBackFromStreaming: Bool
+    let httpStatusCode: Int?
+    let requestID: String?
+    let openAIProcessingMS: Int?
+    let contentType: String?
+    let responseHeadersReceivedMS: Int?
+    let transportFailureStage: TranscriptionTransportFailureStage?
+    let networkErrorDomain: String?
+    let networkErrorCode: Int?
+    let networkErrorCodeName: String?
 }
 
 struct TranscriptionResult: Equatable {
@@ -38,9 +58,9 @@ struct TranscriptionResult: Equatable {
 
 enum TranscriptionBackendError: LocalizedError {
     case invalidAPIKey
-    case networkUnavailable
-    case unexpectedResponse(Int)
-    case invalidResponse
+    case networkUnavailable(TranscriptionFailureContext? = nil)
+    case unexpectedResponse(Int, TranscriptionFailureContext? = nil)
+    case invalidResponse(TranscriptionFailureContext? = nil)
     case serializationFailure
     case timeout(TimeInterval)
     case notImplemented
@@ -51,7 +71,7 @@ enum TranscriptionBackendError: LocalizedError {
             "The configured API key is invalid."
         case .networkUnavailable:
             "Head Canon could not reach the transcription service."
-        case .unexpectedResponse(let statusCode):
+        case .unexpectedResponse(let statusCode, _):
             "The transcription service returned status code \(statusCode)."
         case .invalidResponse:
             "The transcription response could not be decoded."

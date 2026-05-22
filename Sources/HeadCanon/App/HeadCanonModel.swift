@@ -7,6 +7,8 @@ enum WorkflowStatus: String {
     case setupRequired
     case ready
     case recording
+    case finalizingRecording
+    case startingTranscription
     case transcribing
     case inserted
     case failed
@@ -19,12 +21,25 @@ enum WorkflowStatus: String {
             "Ready"
         case .recording:
             "Recording"
+        case .finalizingRecording:
+            "Finalizing"
+        case .startingTranscription:
+            "Starting Transcription"
         case .transcribing:
             "Transcribing"
         case .inserted:
             "Inserted"
         case .failed:
             "Needs Attention"
+        }
+    }
+
+    var blocksNewDictation: Bool {
+        switch self {
+        case .recording, .finalizingRecording, .startingTranscription, .transcribing:
+            true
+        case .setupRequired, .ready, .inserted, .failed:
+            false
         }
     }
 }
@@ -176,6 +191,17 @@ struct DiagnosticEvent: Identifiable {
     let isFailure: Bool
 }
 
+enum ClipboardRecoveryReason: String, Equatable, Codable {
+    case missingInsertionTarget
+    case insertionSafetyBlock
+    case insertionFailure
+}
+
+struct ClipboardRecoveryState: Equatable {
+    let transcriptCopied: Bool
+    let reason: ClipboardRecoveryReason
+}
+
 enum HotkeyReleaseSource: String, Equatable, Identifiable {
     case carbonKeyUp
     case globalModifierMonitor
@@ -207,7 +233,7 @@ struct RecordingAttemptDiagnostics: Equatable {
     let hotkeyPressedAt: Date?
     let recordingStartedAt: Date?
     let hotkeyReleasedAt: Date?
-    let processingStateShownAt: Date?
+    let finalizingStateShownAt: Date?
     let recordingFinalizedAt: Date?
     let transcriptionRequestStartedAt: Date?
     let transcriptionResponseCompletedAt: Date?
@@ -224,13 +250,18 @@ struct RecordingAttemptDiagnostics: Equatable {
     let transcriptionRequestID: String?
     let transcriptionProcessingMS: Int?
     let transcriptionResponseContentType: String?
+    let transcriptionResponseHeadersReceivedMS: Int?
+    let transcriptionTransportFailureStage: String?
+    let transcriptionNetworkErrorDomain: String?
+    let transcriptionNetworkErrorCode: Int?
+    let transcriptionNetworkErrorCodeName: String?
 
     var pressToRecordingStartDuration: TimeInterval? {
         elapsedTime(from: hotkeyPressedAt, to: recordingStartedAt)
     }
 
-    var releaseToProcessingStateDuration: TimeInterval? {
-        elapsedTime(from: hotkeyReleasedAt, to: processingStateShownAt)
+    var releaseToFinalizingStateDuration: TimeInterval? {
+        elapsedTime(from: hotkeyReleasedAt, to: finalizingStateShownAt)
     }
 
     var releaseToFinalizedDuration: TimeInterval? {
@@ -257,7 +288,7 @@ struct RecordingAttemptDiagnostics: Equatable {
         hotkeyPressedAt: nil,
         recordingStartedAt: nil,
         hotkeyReleasedAt: nil,
-        processingStateShownAt: nil,
+        finalizingStateShownAt: nil,
         recordingFinalizedAt: nil,
         transcriptionRequestStartedAt: nil,
         transcriptionResponseCompletedAt: nil,
@@ -273,7 +304,12 @@ struct RecordingAttemptDiagnostics: Equatable {
         transcriptionHTTPStatusCode: nil,
         transcriptionRequestID: nil,
         transcriptionProcessingMS: nil,
-        transcriptionResponseContentType: nil
+        transcriptionResponseContentType: nil,
+        transcriptionResponseHeadersReceivedMS: nil,
+        transcriptionTransportFailureStage: nil,
+        transcriptionNetworkErrorDomain: nil,
+        transcriptionNetworkErrorCode: nil,
+        transcriptionNetworkErrorCodeName: nil
     )
 
     func withRecordingStarted(at timestamp: Date) -> RecordingAttemptDiagnostics {
@@ -281,7 +317,7 @@ struct RecordingAttemptDiagnostics: Equatable {
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: timestamp,
             hotkeyReleasedAt: hotkeyReleasedAt,
-            processingStateShownAt: processingStateShownAt,
+            finalizingStateShownAt: finalizingStateShownAt,
             recordingFinalizedAt: recordingFinalizedAt,
             transcriptionRequestStartedAt: transcriptionRequestStartedAt,
             transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
@@ -297,7 +333,12 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: transcriptionHTTPStatusCode,
             transcriptionRequestID: transcriptionRequestID,
             transcriptionProcessingMS: transcriptionProcessingMS,
-            transcriptionResponseContentType: transcriptionResponseContentType
+            transcriptionResponseContentType: transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
         )
     }
 
@@ -306,7 +347,7 @@ struct RecordingAttemptDiagnostics: Equatable {
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: recordingStartedAt,
             hotkeyReleasedAt: context.observedAt,
-            processingStateShownAt: processingStateShownAt,
+            finalizingStateShownAt: finalizingStateShownAt,
             recordingFinalizedAt: recordingFinalizedAt,
             transcriptionRequestStartedAt: transcriptionRequestStartedAt,
             transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
@@ -322,7 +363,12 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: transcriptionHTTPStatusCode,
             transcriptionRequestID: transcriptionRequestID,
             transcriptionProcessingMS: transcriptionProcessingMS,
-            transcriptionResponseContentType: transcriptionResponseContentType
+            transcriptionResponseContentType: transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
         )
     }
 
@@ -331,7 +377,7 @@ struct RecordingAttemptDiagnostics: Equatable {
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: recordingStartedAt,
             hotkeyReleasedAt: hotkeyReleasedAt,
-            processingStateShownAt: processingStateShownAt,
+            finalizingStateShownAt: finalizingStateShownAt,
             recordingFinalizedAt: timestamp,
             transcriptionRequestStartedAt: transcriptionRequestStartedAt,
             transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
@@ -347,7 +393,12 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: transcriptionHTTPStatusCode,
             transcriptionRequestID: transcriptionRequestID,
             transcriptionProcessingMS: transcriptionProcessingMS,
-            transcriptionResponseContentType: transcriptionResponseContentType
+            transcriptionResponseContentType: transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
         )
     }
 
@@ -356,7 +407,7 @@ struct RecordingAttemptDiagnostics: Equatable {
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: recordingStartedAt,
             hotkeyReleasedAt: hotkeyReleasedAt,
-            processingStateShownAt: processingStateShownAt,
+            finalizingStateShownAt: finalizingStateShownAt,
             recordingFinalizedAt: recordingFinalizedAt,
             transcriptionRequestStartedAt: transcriptionRequestStartedAt,
             transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
@@ -372,16 +423,51 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: result.responseMetadata?.httpStatusCode,
             transcriptionRequestID: result.responseMetadata?.requestID,
             transcriptionProcessingMS: result.responseMetadata?.openAIProcessingMS,
-            transcriptionResponseContentType: result.responseMetadata?.contentType
+            transcriptionResponseContentType: result.responseMetadata?.contentType,
+            transcriptionResponseHeadersReceivedMS: result.responseMetadata?.responseHeadersReceivedMS,
+            transcriptionTransportFailureStage: nil,
+            transcriptionNetworkErrorDomain: nil,
+            transcriptionNetworkErrorCode: nil,
+            transcriptionNetworkErrorCodeName: nil
         )
     }
 
-    func withProcessingStateShown(at timestamp: Date) -> RecordingAttemptDiagnostics {
+    func withTranscriptionFailureContext(_ context: TranscriptionFailureContext?) -> RecordingAttemptDiagnostics {
         RecordingAttemptDiagnostics(
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: recordingStartedAt,
             hotkeyReleasedAt: hotkeyReleasedAt,
-            processingStateShownAt: timestamp,
+            finalizingStateShownAt: finalizingStateShownAt,
+            recordingFinalizedAt: recordingFinalizedAt,
+            transcriptionRequestStartedAt: transcriptionRequestStartedAt,
+            transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
+            insertionCompletedAt: insertionCompletedAt,
+            stopTrigger: stopTrigger,
+            clipDuration: clipDuration,
+            recordedFileSizeBytes: recordedFileSizeBytes,
+            transcriptCharacterCount: transcriptCharacterCount,
+            transcriptWordCount: transcriptWordCount,
+            transcriptionBackendID: transcriptionBackendID,
+            transcriptionRequestMode: context?.requestMode.title ?? transcriptionRequestMode,
+            transcriptionFellBackFromStreaming: context?.fellBackFromStreaming ?? transcriptionFellBackFromStreaming,
+            transcriptionHTTPStatusCode: context?.httpStatusCode ?? transcriptionHTTPStatusCode,
+            transcriptionRequestID: context?.requestID ?? transcriptionRequestID,
+            transcriptionProcessingMS: context?.openAIProcessingMS ?? transcriptionProcessingMS,
+            transcriptionResponseContentType: context?.contentType ?? transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: context?.responseHeadersReceivedMS ?? transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: context?.transportFailureStage?.rawValue ?? transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: context?.networkErrorDomain ?? transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: context?.networkErrorCode ?? transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: context?.networkErrorCodeName ?? transcriptionNetworkErrorCodeName
+        )
+    }
+
+    func withFinalizingStateShown(at timestamp: Date) -> RecordingAttemptDiagnostics {
+        RecordingAttemptDiagnostics(
+            hotkeyPressedAt: hotkeyPressedAt,
+            recordingStartedAt: recordingStartedAt,
+            hotkeyReleasedAt: hotkeyReleasedAt,
+            finalizingStateShownAt: timestamp,
             recordingFinalizedAt: recordingFinalizedAt,
             transcriptionRequestStartedAt: transcriptionRequestStartedAt,
             transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
@@ -397,7 +483,12 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: transcriptionHTTPStatusCode,
             transcriptionRequestID: transcriptionRequestID,
             transcriptionProcessingMS: transcriptionProcessingMS,
-            transcriptionResponseContentType: transcriptionResponseContentType
+            transcriptionResponseContentType: transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
         )
     }
 
@@ -406,7 +497,7 @@ struct RecordingAttemptDiagnostics: Equatable {
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: recordingStartedAt,
             hotkeyReleasedAt: hotkeyReleasedAt,
-            processingStateShownAt: processingStateShownAt,
+            finalizingStateShownAt: finalizingStateShownAt,
             recordingFinalizedAt: recordingFinalizedAt,
             transcriptionRequestStartedAt: timestamp,
             transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
@@ -422,7 +513,12 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: transcriptionHTTPStatusCode,
             transcriptionRequestID: transcriptionRequestID,
             transcriptionProcessingMS: transcriptionProcessingMS,
-            transcriptionResponseContentType: transcriptionResponseContentType
+            transcriptionResponseContentType: transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
         )
     }
 
@@ -431,7 +527,7 @@ struct RecordingAttemptDiagnostics: Equatable {
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: recordingStartedAt,
             hotkeyReleasedAt: hotkeyReleasedAt,
-            processingStateShownAt: processingStateShownAt,
+            finalizingStateShownAt: finalizingStateShownAt,
             recordingFinalizedAt: recordingFinalizedAt,
             transcriptionRequestStartedAt: transcriptionRequestStartedAt,
             transcriptionResponseCompletedAt: timestamp,
@@ -447,7 +543,12 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: transcriptionHTTPStatusCode,
             transcriptionRequestID: transcriptionRequestID,
             transcriptionProcessingMS: transcriptionProcessingMS,
-            transcriptionResponseContentType: transcriptionResponseContentType
+            transcriptionResponseContentType: transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
         )
     }
 
@@ -456,7 +557,7 @@ struct RecordingAttemptDiagnostics: Equatable {
             hotkeyPressedAt: hotkeyPressedAt,
             recordingStartedAt: recordingStartedAt,
             hotkeyReleasedAt: hotkeyReleasedAt,
-            processingStateShownAt: processingStateShownAt,
+            finalizingStateShownAt: finalizingStateShownAt,
             recordingFinalizedAt: recordingFinalizedAt,
             transcriptionRequestStartedAt: transcriptionRequestStartedAt,
             transcriptionResponseCompletedAt: transcriptionResponseCompletedAt,
@@ -472,7 +573,12 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionHTTPStatusCode: transcriptionHTTPStatusCode,
             transcriptionRequestID: transcriptionRequestID,
             transcriptionProcessingMS: transcriptionProcessingMS,
-            transcriptionResponseContentType: transcriptionResponseContentType
+            transcriptionResponseContentType: transcriptionResponseContentType,
+            transcriptionResponseHeadersReceivedMS: transcriptionResponseHeadersReceivedMS,
+            transcriptionTransportFailureStage: transcriptionTransportFailureStage,
+            transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
+            transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
         )
     }
 
@@ -482,26 +588,6 @@ struct RecordingAttemptDiagnostics: Equatable {
         }
 
         return end.timeIntervalSince(start)
-    }
-}
-
-private actor TranscriptionTimeoutRace {
-    private var continuation: CheckedContinuation<TranscriptionResult, Error>?
-    private var didComplete = false
-
-    init(continuation: CheckedContinuation<TranscriptionResult, Error>) {
-        self.continuation = continuation
-    }
-
-    func complete(with result: Result<TranscriptionResult, Error>) -> Bool {
-        guard !didComplete, let continuation else {
-            return false
-        }
-
-        didComplete = true
-        self.continuation = nil
-        continuation.resume(with: result)
-        return true
     }
 }
 
@@ -540,6 +626,7 @@ final class HeadCanonModel {
     @ObservationIgnored private let diagnosticsStore: any DiagnosticsStoring
     @ObservationIgnored private let hotkeyManager: any HotkeyManaging
     @ObservationIgnored private let statusOverlay: any StatusOverlayPresenting
+    @ObservationIgnored private let clipboardWriter: any ClipboardWriting
 
     let preferences: AppPreferences
 
@@ -558,6 +645,7 @@ final class HeadCanonModel {
     var lastRecordingAttemptDiagnostics: RecordingAttemptDiagnostics?
     var lastCapturedInsertionReport: InsertionAttemptReport?
     var lastInsertionAttemptReport: InsertionAttemptReport?
+    var lastClipboardRecovery: ClipboardRecoveryState?
     var permissionDebugSnapshot: PermissionDebugSnapshot = .empty
     var permissionSelfTestResults: [PermissionSelfTestResult] = []
     @ObservationIgnored private var hasPresentedSetupWindow = false
@@ -570,6 +658,7 @@ final class HeadCanonModel {
     @ObservationIgnored private var activeTranscriptionAttemptID: UUID?
     @ObservationIgnored private var currentAttemptID: UUID?
     @ObservationIgnored private let diagnosticsSessionID = UUID()
+    @ObservationIgnored private let maxTransientTranscriptionAttempts = 2
     @ObservationIgnored private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "local.headcanon.app",
         category: "app-model"
@@ -587,6 +676,7 @@ final class HeadCanonModel {
         diagnosticsStore: (any DiagnosticsStoring)? = nil,
         hotkeyManager: (any HotkeyManaging)? = nil,
         statusOverlay: (any StatusOverlayPresenting)? = nil,
+        clipboardWriter: (any ClipboardWriting)? = nil,
         transcriptionTimeout: Duration = .seconds(30)
     ) {
         self.preferences = preferences
@@ -601,6 +691,7 @@ final class HeadCanonModel {
         self.diagnosticsStore = diagnosticsStore ?? DiagnosticsStore()
         self.hotkeyManager = hotkeyManager ?? HotkeyManager()
         self.statusOverlay = statusOverlay ?? StatusOverlayController.shared
+        self.clipboardWriter = clipboardWriter ?? SystemClipboardWriter()
         self.transcriptionTimeout = transcriptionTimeout
         self.lastValidationDate = preferences.lastValidationDate
     }
@@ -646,7 +737,7 @@ final class HeadCanonModel {
         switch workflowStatus {
         case .recording:
             "waveform.circle.fill"
-        case .transcribing:
+        case .finalizingRecording, .startingTranscription, .transcribing:
             "ellipsis.circle.fill"
         case .ready, .inserted:
             "mic.circle.fill"
@@ -685,7 +776,7 @@ final class HeadCanonModel {
             break
         }
 
-        if isReady && workflowStatus != .recording && workflowStatus != .transcribing && workflowStatus != .failed {
+        if isReady && !workflowStatus.blocksNewDictation && workflowStatus != .failed {
             return "Ready for the TextEdit dictation smoke test."
         }
 
@@ -696,6 +787,10 @@ final class HeadCanonModel {
             return "Ready for the TextEdit dictation smoke test."
         case .recording:
             return "Recording is in progress."
+        case .finalizingRecording:
+            return "Recording is being finalized."
+        case .startingTranscription:
+            return "Transcription request is starting."
         case .transcribing:
             return "Transcription is in progress."
         case .inserted:
@@ -755,8 +850,8 @@ final class HeadCanonModel {
             "- Recording started at: \(formattedTimestamp(report.recordingStartedAt))",
             "- Press to recording start: \(formattedDuration(report.pressToRecordingStartDuration))",
             "- Hotkey released at: \(formattedTimestamp(report.hotkeyReleasedAt))",
-            "- Processing state shown at: \(formattedTimestamp(report.processingStateShownAt))",
-            "- Release to processing state: \(formattedDuration(report.releaseToProcessingStateDuration))",
+            "- Finalizing state shown at: \(formattedTimestamp(report.finalizingStateShownAt))",
+            "- Release to finalizing state: \(formattedDuration(report.releaseToFinalizingStateDuration))",
             "- Recording finalized at: \(formattedTimestamp(report.recordingFinalizedAt))",
             "- Release to recording finalized: \(formattedDuration(report.releaseToFinalizedDuration))",
             "- Transcription request started at: \(formattedTimestamp(report.transcriptionRequestStartedAt))",
@@ -778,6 +873,11 @@ final class HeadCanonModel {
             "- Transcription request ID: \(report.transcriptionRequestID ?? "Unknown")",
             "- OpenAI processing time: \(formattedMilliseconds(report.transcriptionProcessingMS))",
             "- Response content type: \(report.transcriptionResponseContentType ?? "Unknown")",
+            "- Request start to response headers: \(formattedMilliseconds(report.transcriptionResponseHeadersReceivedMS))",
+            "- Transport failure stage: \(report.transcriptionTransportFailureStage ?? "Unknown")",
+            "- Network error domain: \(report.transcriptionNetworkErrorDomain ?? "Unknown")",
+            "- Network error code: \(formattedCount(report.transcriptionNetworkErrorCode))",
+            "- Network error code name: \(report.transcriptionNetworkErrorCodeName ?? "Unknown")",
         ]
     }
 
@@ -1024,9 +1124,7 @@ final class HeadCanonModel {
     }
 
     func copyDiagnosticsReport() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(diagnosticsReport, forType: .string)
+        _ = clipboardWriter.write(diagnosticsReport)
         recordDiagnosticEvent(
             "Copied the full diagnostics report.",
             isFailure: false
@@ -1156,7 +1254,7 @@ final class HeadCanonModel {
             case .timeout:
                 apiKeyState = .networkUnavailable("Head Canon timed out while validating the stored API key.")
                 lastValidationDate = preferences.hasCachedValidation(for: apiKey) ? preferences.lastValidationDate : nil
-            case .unexpectedResponse(let statusCode):
+            case .unexpectedResponse(let statusCode, _):
                 apiKeyState = .invalid("OpenAI returned an unexpected status code: \(statusCode).")
                 lastValidationDate = nil
                 preferences.clearValidatedAPIKeyState()
@@ -1192,6 +1290,7 @@ final class HeadCanonModel {
         currentAttemptID = UUID()
         lastCapturedInsertionReport = nil
         lastInsertionAttemptReport = nil
+        lastClipboardRecovery = nil
 
         Task {
             @MainActor in
@@ -1231,9 +1330,7 @@ final class HeadCanonModel {
     }
 
     func copyAppPath() {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(currentAppPath, forType: .string)
+        _ = clipboardWriter.write(currentAppPath)
     }
 
     func openDiagnosticsFolder() {
@@ -1334,6 +1431,7 @@ final class HeadCanonModel {
         lastRecordingAttemptDiagnostics = nil
         lastCapturedInsertionReport = nil
         lastInsertionAttemptReport = nil
+        lastClipboardRecovery = nil
 
         let diagnosticsStore = self.diagnosticsStore
         let logger = self.logger
@@ -1493,10 +1591,10 @@ final class HeadCanonModel {
             return
         }
 
-        guard workflowStatus != .transcribing else {
+        guard !workflowStatus.blocksNewDictation else {
             recordDiagnosticEvent(
-                "Ignored hotkey press because transcription is still in progress.",
-                stage: .transcription,
+                "Ignored hotkey press because dictation processing is still in progress.",
+                stage: .hotkey,
                 isFailure: false
             )
             return
@@ -1511,7 +1609,7 @@ final class HeadCanonModel {
             hotkeyPressedAt: now,
             recordingStartedAt: nil,
             hotkeyReleasedAt: nil,
-            processingStateShownAt: nil,
+            finalizingStateShownAt: nil,
             recordingFinalizedAt: nil,
             transcriptionRequestStartedAt: nil,
             transcriptionResponseCompletedAt: nil,
@@ -1527,9 +1625,15 @@ final class HeadCanonModel {
             transcriptionHTTPStatusCode: nil,
             transcriptionRequestID: nil,
             transcriptionProcessingMS: nil,
-            transcriptionResponseContentType: nil
+            transcriptionResponseContentType: nil,
+            transcriptionResponseHeadersReceivedMS: nil,
+            transcriptionTransportFailureStage: nil,
+            transcriptionNetworkErrorDomain: nil,
+            transcriptionNetworkErrorCode: nil,
+            transcriptionNetworkErrorCodeName: nil
         )
         currentAttemptID = UUID()
+        lastClipboardRecovery = nil
 
         do {
             try audioCaptureService.startRecording(preferredDeviceID: preferences.selectedMicrophoneID)
@@ -1560,13 +1664,13 @@ final class HeadCanonModel {
             }
 
             let processingStateTimestamp = Date()
-            lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withProcessingStateShown(at: processingStateTimestamp)
+            lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withFinalizingStateShown(at: processingStateTimestamp)
             recordDiagnosticEvent(
-                "Hotkey released via \(context.source.title). Moving immediately into processing state.",
+                "Hotkey released via \(context.source.title). Moving into recording finalization.",
                 stage: .hotkey,
                 isFailure: false
             )
-            setWorkflowStatus(.transcribing)
+            setWorkflowStatus(.finalizingRecording)
 
             let insertionTarget: (any TextInsertionTargetHandle)?
             let insertionTargetError: String?
@@ -1615,12 +1719,6 @@ final class HeadCanonModel {
             )
             let attemptID = UUID()
             activeTranscriptionAttemptID = attemptID
-            lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionRequestStarted(at: Date())
-            recordDiagnosticEvent(
-                "Transcription request started with a \(Int(transcriptionTimeout.timeInterval.rounded())) second timeout.",
-                stage: .transcription,
-                isFailure: false
-            )
             await transcribeAndInsert(
                 input,
                 insertionTarget: insertionTarget,
@@ -1643,6 +1741,8 @@ final class HeadCanonModel {
             }
         }
 
+        var transcribedTextForRecovery: String?
+
         if cachedAPIKey == nil {
             cachedAPIKey = loadAPIKeyFromStore()
         }
@@ -1661,7 +1761,15 @@ final class HeadCanonModel {
         }
 
         do {
-            let result = try await transcribeWithTimeout(input, apiKey: apiKey)
+            setWorkflowStatus(.startingTranscription)
+            lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionRequestStarted(at: Date())
+            recordDiagnosticEvent(
+                "Transcription request started with a \(Int(transcriptionTimeout.timeInterval.rounded())) second timeout.",
+                stage: .transcription,
+                isFailure: false
+            )
+            setWorkflowStatus(.transcribing)
+            let result = try await transcribeWithRetry(input, apiKey: apiKey)
             guard activeTranscriptionAttemptID == attemptID else {
                 recordDiagnosticEvent(
                     "Ignored stale transcription completion from \(result.backendID).",
@@ -1684,28 +1792,26 @@ final class HeadCanonModel {
                     isFailure: false
                 )
             }
+            transcribedTextForRecovery = result.text
             retainTranscriptIfAllowed(result.text)
 
             guard let insertionTarget else {
                 lastInsertionAttemptReport = nil
-                recordFailure(
-                    .insertion,
-                    message: insertionTargetError ?? TextInsertionError.focusUnavailable.localizedDescription
-                )
-                setWorkflowStatus(
-                    .failed,
-                    errorMessage: insertionTargetError ?? TextInsertionError.focusUnavailable.localizedDescription
+                let failureMessage = handleInsertionFailure(
+                    afterSuccessfulTranscription: result.text,
+                    baseMessage: insertionTargetError ?? TextInsertionError.focusUnavailable.localizedDescription,
+                    reason: .missingInsertionTarget
                 )
                 persistCurrentAttempt(
                     terminalState: .failed,
                     failureStage: .insertion,
-                    failureMessage: insertionTargetError ?? TextInsertionError.focusUnavailable.localizedDescription
+                    failureMessage: failureMessage
                 )
                 return
             }
 
-            lastInsertionAttemptReport = try textInsertionService.planInsertion(
-                target: insertionTarget,
+            lastInsertionAttemptReport = try textInsertionService.planExecutionInsertion(
+                relativeTo: insertionTarget,
                 allowPasteFallback: preferences.pasteFallbackEnabled,
                 observationLabel: "Insert-Time Context"
             )
@@ -1726,6 +1832,9 @@ final class HeadCanonModel {
                 return
             }
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionResponseCompleted(at: Date())
+            lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionFailureContext(
+                transcriptionFailureContext(from: error)
+            )
             if case .invalidAPIKey = error {
                 apiKeyState = .invalid("The stored OpenAI API key was rejected.")
                 lastValidationDate = nil
@@ -1760,18 +1869,72 @@ final class HeadCanonModel {
                 return
             }
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionResponseCompleted(at: Date())
-            recordFailure(.insertion, message: error.localizedDescription)
+            let failureMessage = handleInsertionFailure(
+                afterSuccessfulTranscription: transcribedTextForRecovery ?? "",
+                baseMessage: error.localizedDescription,
+                reason: clipboardRecoveryReason(for: error)
+            )
             persistCurrentAttempt(
                 terminalState: .failed,
                 failureStage: .insertion,
-                failureMessage: error.localizedDescription
+                failureMessage: failureMessage
             )
-            setWorkflowStatus(.failed, errorMessage: error.localizedDescription)
         }
     }
 
     private func retainTranscriptIfAllowed(_ text: String) {
         lastTranscript = shouldRetainTranscript ? text : nil
+    }
+
+    @discardableResult
+    private func handleInsertionFailure(
+        afterSuccessfulTranscription text: String,
+        baseMessage: String,
+        reason: ClipboardRecoveryReason
+    ) -> String {
+        guard !text.isEmpty else {
+            lastClipboardRecovery = ClipboardRecoveryState(transcriptCopied: false, reason: reason)
+            recordFailure(.insertion, message: baseMessage)
+            setWorkflowStatus(.failed, errorMessage: baseMessage)
+            return baseMessage
+        }
+
+        let copied = clipboardWriter.write(text)
+        lastClipboardRecovery = ClipboardRecoveryState(transcriptCopied: copied, reason: reason)
+
+        let failureMessage: String
+        if copied {
+            failureMessage = "\(baseMessage) Transcript copied to clipboard for manual paste."
+            recordDiagnosticEvent(
+                "Head Canon copied the transcript to the clipboard for manual paste recovery.",
+                stage: .insertion,
+                isFailure: false
+            )
+        } else {
+            failureMessage = baseMessage
+            recordDiagnosticEvent(
+                "Head Canon preserved the transcript, but could not copy it to the clipboard for manual paste.",
+                stage: .insertion,
+                isFailure: true
+            )
+        }
+
+        recordFailure(.insertion, message: failureMessage)
+        setWorkflowStatus(.failed, errorMessage: failureMessage)
+        return failureMessage
+    }
+
+    private func clipboardRecoveryReason(for error: Error) -> ClipboardRecoveryReason {
+        guard let insertionError = error as? TextInsertionError else {
+            return .insertionFailure
+        }
+
+        switch insertionError {
+        case .focusChanged, .placeholderCleanupRequired, .secureTarget, .unsupportedTarget:
+            return .insertionSafetyBlock
+        case .focusUnavailable, .accessibilityPermissionRequired, .accessibilityAPIError, .pasteFailed, .pasteDeliveryUnconfirmed, .pasteFallbackDisabled:
+            return .insertionFailure
+        }
     }
 
     private func refreshPermissionDebugSnapshot() {
@@ -1789,7 +1952,7 @@ final class HeadCanonModel {
     }
 
     private func recalculateWorkflowStatus() {
-        guard workflowStatus != .recording && workflowStatus != .transcribing else {
+        guard !workflowStatus.blocksNewDictation else {
             return
         }
 
@@ -1898,6 +2061,7 @@ final class HeadCanonModel {
         let metrics = lastRecordingAttemptDiagnostics ?? .empty
         let releaseTimeInsertionReport = lastCapturedInsertionReport
         let insertionReport = lastInsertionAttemptReport ?? lastCapturedInsertionReport
+        let clipboardRecovery = lastClipboardRecovery
 
         return DictationAttemptRecord(
             schemaVersion: DictationAttemptRecord.schemaVersion,
@@ -1915,14 +2079,14 @@ final class HeadCanonModel {
                 hotkeyPressedAt: metrics.hotkeyPressedAt,
                 recordingStartedAt: metrics.recordingStartedAt,
                 hotkeyReleasedAt: metrics.hotkeyReleasedAt,
-                processingStateShownAt: metrics.processingStateShownAt,
+                finalizingStateShownAt: metrics.finalizingStateShownAt,
                 recordingFinalizedAt: metrics.recordingFinalizedAt,
                 transcriptionRequestStartedAt: metrics.transcriptionRequestStartedAt,
                 transcriptionResponseCompletedAt: metrics.transcriptionResponseCompletedAt,
                 insertionCompletedAt: metrics.insertionCompletedAt,
                 stopTrigger: metrics.stopTrigger?.rawValue,
                 pressToRecordingStartDurationMS: durationMilliseconds(metrics.pressToRecordingStartDuration),
-                releaseToProcessingStateDurationMS: durationMilliseconds(metrics.releaseToProcessingStateDuration),
+                releaseToFinalizingStateDurationMS: durationMilliseconds(metrics.releaseToFinalizingStateDuration),
                 releaseToFinalizedDurationMS: durationMilliseconds(metrics.releaseToFinalizedDuration),
                 finalizedToRequestStartDurationMS: durationMilliseconds(metrics.finalizedToRequestStartDuration),
                 requestToResponseDurationMS: durationMilliseconds(metrics.requestToResponseDuration),
@@ -1944,7 +2108,12 @@ final class HeadCanonModel {
                 httpStatusCode: metrics.transcriptionHTTPStatusCode,
                 requestID: metrics.transcriptionRequestID,
                 openAIProcessingMS: metrics.transcriptionProcessingMS,
-                responseContentType: metrics.transcriptionResponseContentType
+                responseContentType: metrics.transcriptionResponseContentType,
+                responseHeadersReceivedMS: metrics.transcriptionResponseHeadersReceivedMS,
+                transportFailureStage: metrics.transcriptionTransportFailureStage,
+                networkErrorDomain: metrics.transcriptionNetworkErrorDomain,
+                networkErrorCode: metrics.transcriptionNetworkErrorCode,
+                networkErrorCodeName: metrics.transcriptionNetworkErrorCodeName
             ),
             releaseTimeInsertion: releaseTimeInsertionReport.map { report in
                 DictationAttemptInsertionRecord(
@@ -2003,6 +2172,12 @@ final class HeadCanonModel {
                     stage: stage.rawValue,
                     message: failureMessage ?? lastErrorMessage ?? "Unknown failure."
                 )
+            },
+            clipboardRecovery: clipboardRecovery.map { recovery in
+                DictationAttemptClipboardRecoveryRecord(
+                    transcriptCopied: recovery.transcriptCopied,
+                    reason: recovery.reason.rawValue
+                )
             }
         )
     }
@@ -2059,36 +2234,101 @@ final class HeadCanonModel {
         return Int((duration * 1000).rounded())
     }
 
+    private func transcriptionFailureContext(from error: TranscriptionBackendError) -> TranscriptionFailureContext? {
+        switch error {
+        case .networkUnavailable(let context):
+            context
+        case .unexpectedResponse(_, let context):
+            context
+        case .invalidResponse(let context):
+            context
+        case .invalidAPIKey, .serializationFailure, .timeout, .notImplemented:
+            nil
+        }
+    }
+
+    private func shouldRetryTranscription(after error: TranscriptionBackendError, attempt: Int) -> Bool {
+        guard attempt < maxTransientTranscriptionAttempts else {
+            return false
+        }
+
+        guard case .networkUnavailable(let context) = error else {
+            return false
+        }
+
+        if let httpStatusCode = context?.httpStatusCode {
+            switch httpStatusCode {
+            case 408, 409, 425, 429:
+                return true
+            case 500 ... 599:
+                return true
+            default:
+                break
+            }
+        }
+
+        guard context?.networkErrorDomain == NSURLErrorDomain else {
+            return false
+        }
+
+        return switch context?.networkErrorCode {
+        case URLError.timedOut.rawValue,
+            URLError.networkConnectionLost.rawValue,
+            URLError.cannotConnectToHost.rawValue:
+            true
+        default:
+            false
+        }
+    }
+
+    private func transcribeWithRetry(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
+        var attempt = 1
+
+        while true {
+            do {
+                return try await transcribeWithTimeout(input, apiKey: apiKey)
+            } catch let error as TranscriptionBackendError {
+                guard shouldRetryTranscription(after: error, attempt: attempt) else {
+                    throw error
+                }
+
+                attempt += 1
+                recordDiagnosticEvent(
+                    "Retrying transcription after a transient transport failure. Attempt \(attempt) of \(maxTransientTranscriptionAttempts).",
+                    stage: .transcription,
+                    isFailure: false
+                )
+            }
+        }
+    }
+
     private func transcribeWithTimeout(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
         let backend = transcriptionBackend
         let timeout = transcriptionTimeout
 
-        return try await withCheckedThrowingContinuation { continuation in
-            let race = TranscriptionTimeoutRace(continuation: continuation)
+        let transcriptionTask = Task { @MainActor [backend] in
+            try await backend.transcribe(input, apiKey: apiKey)
+        }
 
-            Task { @MainActor [backend] in
-                let result: Result<TranscriptionResult, Error>
-
-                do {
-                    result = .success(try await backend.transcribe(input, apiKey: apiKey))
-                } catch {
-                    result = .failure(error)
-                }
-
-                _ = await race.complete(with: result)
+        return try await withThrowingTaskGroup(of: TranscriptionResult.self) { group in
+            group.addTask {
+                try await transcriptionTask.value
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw TranscriptionBackendError.timeout(timeout.timeInterval)
             }
 
-            Task { [timeout] in
-                do {
-                    try await Task.sleep(for: timeout)
-                } catch {
-                    return
-                }
-
-                _ = await race.complete(
-                    with: .failure(TranscriptionBackendError.timeout(timeout.timeInterval))
-                )
+            defer {
+                group.cancelAll()
+                transcriptionTask.cancel()
             }
+
+            guard let result = try await group.next() else {
+                throw CancellationError()
+            }
+
+            return result
         }
     }
 
@@ -2142,8 +2382,12 @@ final class HeadCanonModel {
             return nil
         case .recording:
             return "Speak now. Release the keys to transcribe."
+        case .finalizingRecording:
+            return "Finalizing your recording."
+        case .startingTranscription:
+            return "Starting the transcription request."
         case .transcribing:
-            return "Converting your recording into text."
+            return "Transcribing your recording."
         case .inserted:
             return "Transcript inserted into the active app."
         case .failed:

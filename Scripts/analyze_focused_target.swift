@@ -350,10 +350,6 @@ func capabilityProfile(
     directInsertCompatible: Bool,
     editable: Bool
 ) -> ApplicationCapabilityProfile {
-    if directInsertCompatible {
-        return .nativeAXStrong
-    }
-
     let normalizedName = applicationName.lowercased()
     switch bundleIdentifier {
     case "com.openai.codex",
@@ -377,6 +373,10 @@ func capabilityProfile(
         || normalizedName.contains("claude")
     {
         return .opaquePasteCapable
+    }
+
+    if directInsertCompatible {
+        return .nativeAXStrong
     }
 
     if editable {
@@ -457,6 +457,15 @@ do {
         chosenStrategy = .unsupported
         predictedFailureClass = "Secure Target Blocked"
         strategyReason = "The focused target appears to be secure, so Head Canon will not attempt insertion."
+    } else if profile == .opaquePasteCapable && pasteCompatible && allowPasteFallback {
+        if appLevelPasteOnly {
+            chosenStrategy = .appClipboardPaste
+            strategyReason = "The app is a known opaque editor, so Head Canon will use app-level clipboard paste while frontmost-app safety holds and will use focused cleanup only when AX focus metadata is available."
+        } else {
+            chosenStrategy = .customEditorPaste
+            strategyReason = "The app is a known opaque editor, so Head Canon will prefer paste-based insertion even though AX exposes writable fields."
+        }
+        predictedFailureClass = nil
     } else if directInsertCompatible {
         chosenStrategy = .axValueReplacement
         predictedFailureClass = nil
@@ -464,7 +473,7 @@ do {
     } else if pasteCompatible && allowPasteFallback {
         if appLevelPasteOnly {
             chosenStrategy = .appClipboardPaste
-            strategyReason = "The app is known to accept clipboard-based insertion even when it does not expose a focused editable AX element."
+            strategyReason = "The app is known to accept app-level clipboard paste while it remains frontmost, and Head Canon will use focused cleanup only when AX focus metadata is available."
         } else if valueReadable || selectedTextRangeReadable {
             chosenStrategy = .pasteFallback
             strategyReason = "The target is editable but direct AX replacement is incomplete, so Head Canon should fall back to paste."

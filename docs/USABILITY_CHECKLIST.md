@@ -7,7 +7,9 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Test only `/Applications/HeadCanon.app`
 - [ ] Do not test `dist/HeadCanon.app`
 - [ ] Do not switch bundle paths during the checkpoint
-- [ ] Track `TextEdit` and `Codex` separately during latency work
+- [ ] Track `TextEdit`, `Codex`, and browser targets separately during latency work
+- [ ] Lock one bounded baseline before comparing anything else
+- [ ] Preserve one known-good bounded snapshot for rollback
 - [ ] For any failure, classify exactly one stage:
   - `permission/readiness`
   - `hotkey delivery`
@@ -32,6 +34,10 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] The API key validates successfully
 - [ ] The app reports the key as valid
 - [ ] The app makes it explicit that this backend sends audio to OpenAI
+- [ ] The current bounded baseline is known before the run starts:
+  - model
+  - request mode
+  - insertion path
 
 ## Input Readiness
 - [ ] The current hotkey mode is known before the test starts
@@ -64,7 +70,11 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Diagnostics writing failure does not block dictation
 - [ ] A clear action exists for the persistent diagnostics log
 - [ ] A repo-local script exists to inspect the latest attempt or recent attempts
-- [ ] The repo-local script can print at least a basic latency summary
+- [ ] The repo-local script can print latency summaries by model and over recent attempts
+- [ ] The repo-local script can summarize by app class and failure reason
+- [ ] The repo-local script can include request-to-headers timing when that field exists
+- [ ] The repo-local script can cleanly separate transcription failures from insertion safety failures
+- [ ] The repo-local script is treated as ready for soak-pass analysis, not a pending tooling task
 
 ## Perceived Responsiveness
 - [ ] The UI leaves `recording` immediately on key-up
@@ -75,15 +85,29 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Run one short-phrase turn in `TextEdit`
 - [ ] Run one short-phrase turn in `Codex`
 - [ ] Run repeated warm turns in both apps, not just one sample
-- [ ] Record at least `p50` and the slowest observed result
+- [ ] Label the benchmark series with app, model, request mode, and cold versus warm
+- [ ] Record `p50`, `p95`, and failure rate
 - [ ] Compare `key-up -> visible processing state`
 - [ ] Compare `key-up -> recording finalized`
 - [ ] Compare `request start -> response complete`
 - [ ] Compare `response complete -> inserted`
 - [ ] Record whether `Codex` is slower because of local insertion cost or backend time
-- [ ] Record whether the slow turn used streaming or standard request mode
-- [ ] Record whether streaming fallback was used
 - [ ] Record whether request time remained dominant after the local hot-path cuts already in the repo
+
+## Soak Test Pass
+- [ ] Run `30-50` warm short-phrase turns in `Codex`
+- [ ] Run `10` turns in `TextEdit`
+- [ ] Run `5` turns in one browser target
+- [ ] Do not treat a `Codex`-heavy run as a full app-matrix benchmark
+- [ ] Group failures by stage
+- [ ] Group results by app class
+- [ ] Record the dominant failure reason, if any
+- [ ] Preserve one known-good summary artifact before changing the model or retry policy
+
+## Timeout Hardening
+- [ ] App-level transcription timeout cancels the in-flight request cleanly
+- [ ] Timeout failures are explicit and do not leave zombie request behavior behind
+- [ ] Timeout handling does not add a retry maze
 
 ## Cold Versus Warm Turn Pass
 - [ ] Measure the first dictation turn after app launch
@@ -114,6 +138,7 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Run at least one `Codex` dictation turn
 - [ ] Record the chosen insertion strategy
 - [ ] Record release-time versus insert-time context if diagnostics mode is enabled
+- [ ] Record whether the focused target changed between response completion and paste completion
 - [ ] The result is explainable without guessing
 - [ ] The insertion path does not impose a large unexplained fixed wait
 
@@ -125,6 +150,9 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Secure targets remain blocked
 - [ ] Performance changes do not weaken wrong-target protections
 - [ ] Logging changes do not store raw transcript text by default
+- [ ] Retry logic, if present, does not create duplicate insertion risk
+- [ ] If a speed experiment regresses reliability or quality, the app can revert to the known-good bounded snapshot
+- [ ] Insertion safety blocks remain strict when focus genuinely changed
 
 ## Recovery Speed
 - [ ] If insertion fails, the user can recover the transcript quickly
@@ -141,9 +169,22 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Hotkey response feels immediate
 - [ ] `key-up -> visible processing state` is under about `100ms`
 - [ ] `key-up -> recording finalized` is under about `300ms` on short turns
-- [ ] Short-phrase `release -> inserted` is usually under about `2-3s`
+- [ ] Short-phrase `release -> inserted p50` is usually under about `2-3s`
+- [ ] Short-phrase `release -> inserted p95` is acceptable for normal use
 - [ ] `Codex` is not paying a large avoidable local delay compared with `TextEdit`
 - [ ] The loop feels ambient enough for normal short dictation
+
+## Model Decision
+- [ ] The bounded model comparison between `gpt-4o-mini-transcribe` and `gpt-4o-transcribe` has been run or deliberately waived
+- [ ] The default model choice is explained by evidence, not inherited from older docs
+- [ ] The chosen default did not win on speed alone while materially hurting transcript quality
+
+## Architecture Decision Gate
+- [ ] There is an explicit decision whether the bounded path is “done enough”
+- [ ] If not, the next experiment is named explicitly:
+  - realtime transcription
+  - `whisper.cpp`
+- [ ] Experiments are kept separate from the stable bounded baseline
 
 ## Minimum Usable Definition
 - [ ] The installed app at `/Applications/HeadCanon.app` captures full short and multi-sentence utterances reliably
@@ -155,7 +196,7 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] A slow or failed turn can be explained from the local diagnostics log without screenshots
 
 ## Not Part Of This Checklist Yet
-These are important, but they come after the current latency pass:
+These are important, but they come after the current hardening pass:
 
 - offline backend validation
 - signing stability across updates

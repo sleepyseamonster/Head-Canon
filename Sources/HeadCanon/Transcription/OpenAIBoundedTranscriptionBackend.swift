@@ -1,6 +1,7 @@
 import Foundation
 
 struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
+    private static let boundedDictationLanguageCode = "en"
     private let modelProvider: () -> OpenAITranscriptionModel
     private let session: URLSession
 
@@ -34,11 +35,11 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         do {
             (_, response) = try await session.data(for: request)
         } catch {
-            throw TranscriptionBackendError.networkUnavailable
+            throw TranscriptionBackendError.networkUnavailable()
         }
 
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw TranscriptionBackendError.invalidResponse
+            throw TranscriptionBackendError.invalidResponse()
         }
 
         switch httpResponse.statusCode {
@@ -47,9 +48,9 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         case 401, 403:
             throw TranscriptionBackendError.invalidAPIKey
         case 408, 409, 425, 429:
-            throw TranscriptionBackendError.networkUnavailable
+            throw TranscriptionBackendError.networkUnavailable()
         case 500 ... 599:
-            throw TranscriptionBackendError.networkUnavailable
+            throw TranscriptionBackendError.networkUnavailable()
         default:
             throw TranscriptionBackendError.unexpectedResponse(httpResponse.statusCode)
         }
@@ -60,9 +61,9 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         let response = try await standardTranscriptionResponse(
             input: input,
             apiKey: apiKey,
-            model: model,
-            fellBackFromStreaming: false
+            model: model
         )
+
         return TranscriptionResult(
             text: response.text,
             backendID: id,
@@ -76,31 +77,66 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         apiKey: String,
         model: String
     ) async throws -> ParsedTranscriptionResponse {
+        let requestMode: TranscriptionRequestMode = .streamedCompletedRecording
         let request = try await Self.makeTranscriptionRequest(
             input: input,
             apiKey: apiKey,
             model: model,
-            responseFormat: "json",
+            responseFormat: "text",
+            language: Self.boundedDictationLanguageCode,
             stream: true
         )
 
+        let clock = ContinuousClock()
+        let requestStartedAt = clock.now
         let bytes: URLSession.AsyncBytes
         let response: URLResponse
 
         do {
             (bytes, response) = try await session.bytes(for: request)
         } catch {
-            throw TranscriptionBackendError.networkUnavailable
+            throw Self.networkFailure(
+                from: error,
+                requestMode: requestMode,
+                fellBackFromStreaming: false,
+                responseHeadersReceivedMS: nil,
+                transportFailureStage: .awaitingResponseHeaders
+            )
         }
 
+        let responseHeadersReceivedMS = Self.elapsedMilliseconds(since: requestStartedAt, clock: clock)
         let metadata = try Self.responseMetadata(
             from: response,
-            requestMode: .streamedCompletedRecording,
-            fellBackFromStreaming: false
+            requestMode: requestMode,
+            fellBackFromStreaming: false,
+            responseHeadersReceivedMS: responseHeadersReceivedMS
         )
-        let text = try await Self.parseStreamingTranscriptionResponse(from: bytes)
+
+        let text: String
+        do {
+            text = try await Self.parseStreamingTranscriptionResponse(from: bytes)
+        } catch {
+            throw Self.networkFailure(
+                from: error,
+                requestMode: requestMode,
+                fellBackFromStreaming: false,
+                responseMetadata: metadata,
+                responseHeadersReceivedMS: responseHeadersReceivedMS,
+                transportFailureStage: .readingResponseBody
+            )
+        }
+
         guard !text.isEmpty else {
-            throw TranscriptionBackendError.invalidResponse
+            throw TranscriptionBackendError.invalidResponse(
+                Self.failureContext(
+                    requestMode: requestMode,
+                    fellBackFromStreaming: false,
+                    responseMetadata: metadata,
+                    responseHeadersReceivedMS: responseHeadersReceivedMS,
+                    transportFailureStage: .readingResponseBody,
+                    networkError: nil
+                )
+            )
         }
         return ParsedTranscriptionResponse(text: text, metadata: metadata)
     }
@@ -124,32 +160,67 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         model: String,
         fellBackFromStreaming: Bool
     ) async throws -> ParsedTranscriptionResponse {
+        let requestMode: TranscriptionRequestMode = .standardCompletedRecording
         let request = try await Self.makeTranscriptionRequest(
             input: input,
             apiKey: apiKey,
             model: model,
             responseFormat: "text",
+            language: Self.boundedDictationLanguageCode,
             stream: false
         )
 
-        let data: Data
+        let clock = ContinuousClock()
+        let requestStartedAt = clock.now
+        let bytes: URLSession.AsyncBytes
         let response: URLResponse
 
         do {
-            (data, response) = try await session.data(for: request)
+            (bytes, response) = try await session.bytes(for: request)
         } catch {
-            throw TranscriptionBackendError.networkUnavailable
+            throw Self.networkFailure(
+                from: error,
+                requestMode: requestMode,
+                fellBackFromStreaming: fellBackFromStreaming,
+                responseHeadersReceivedMS: nil,
+                transportFailureStage: .awaitingResponseHeaders
+            )
         }
 
+        let responseHeadersReceivedMS = Self.elapsedMilliseconds(since: requestStartedAt, clock: clock)
         let metadata = try Self.responseMetadata(
             from: response,
-            requestMode: .standardCompletedRecording,
-            fellBackFromStreaming: fellBackFromStreaming
+            requestMode: requestMode,
+            fellBackFromStreaming: fellBackFromStreaming,
+            responseHeadersReceivedMS: responseHeadersReceivedMS
         )
+
+        let data: Data
+        do {
+            data = try await Self.readAllBytes(from: bytes)
+        } catch {
+            throw Self.networkFailure(
+                from: error,
+                requestMode: requestMode,
+                fellBackFromStreaming: fellBackFromStreaming,
+                responseMetadata: metadata,
+                responseHeadersReceivedMS: responseHeadersReceivedMS,
+                transportFailureStage: .readingResponseBody
+            )
+        }
 
         let text = Self.parsePlainTextResponse(data)
         guard !text.isEmpty else {
-            throw TranscriptionBackendError.invalidResponse
+            throw TranscriptionBackendError.invalidResponse(
+                Self.failureContext(
+                    requestMode: requestMode,
+                    fellBackFromStreaming: fellBackFromStreaming,
+                    responseMetadata: metadata,
+                    responseHeadersReceivedMS: responseHeadersReceivedMS,
+                    transportFailureStage: .readingResponseBody,
+                    networkError: nil
+                )
+            )
         }
         return ParsedTranscriptionResponse(text: text, metadata: metadata)
     }
@@ -159,6 +230,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         apiKey: String,
         model: String,
         responseFormat: String,
+        language: String,
         stream: Bool
     ) async throws -> URLRequest {
         try await Task.detached(priority: .userInitiated) {
@@ -182,6 +254,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
                 boundary: boundary,
                 model: model,
                 responseFormat: responseFormat,
+                language: language,
                 stream: stream
             )
             return request
@@ -191,10 +264,20 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
     nonisolated private static func responseMetadata(
         from response: URLResponse,
         requestMode: TranscriptionRequestMode,
-        fellBackFromStreaming: Bool
+        fellBackFromStreaming: Bool,
+        responseHeadersReceivedMS: Int?
     ) throws -> TranscriptionResponseMetadata {
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw TranscriptionBackendError.invalidResponse
+            throw TranscriptionBackendError.invalidResponse(
+                failureContext(
+                    requestMode: requestMode,
+                    fellBackFromStreaming: fellBackFromStreaming,
+                    responseMetadata: nil,
+                    responseHeadersReceivedMS: responseHeadersReceivedMS,
+                    transportFailureStage: .awaitingResponseHeaders,
+                    networkError: nil
+                )
+            )
         }
 
         switch httpResponse.statusCode {
@@ -203,11 +286,39 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         case 401, 403:
             throw TranscriptionBackendError.invalidAPIKey
         case 408, 409, 425, 429:
-            throw TranscriptionBackendError.networkUnavailable
+            throw TranscriptionBackendError.networkUnavailable(
+                failureContext(
+                    requestMode: requestMode,
+                    fellBackFromStreaming: fellBackFromStreaming,
+                    httpResponse: httpResponse,
+                    responseHeadersReceivedMS: responseHeadersReceivedMS,
+                    transportFailureStage: .awaitingResponseHeaders,
+                    networkError: nil
+                )
+            )
         case 500 ... 599:
-            throw TranscriptionBackendError.networkUnavailable
+            throw TranscriptionBackendError.networkUnavailable(
+                failureContext(
+                    requestMode: requestMode,
+                    fellBackFromStreaming: fellBackFromStreaming,
+                    httpResponse: httpResponse,
+                    responseHeadersReceivedMS: responseHeadersReceivedMS,
+                    transportFailureStage: .awaitingResponseHeaders,
+                    networkError: nil
+                )
+            )
         default:
-            throw TranscriptionBackendError.unexpectedResponse(httpResponse.statusCode)
+            throw TranscriptionBackendError.unexpectedResponse(
+                httpResponse.statusCode,
+                failureContext(
+                    requestMode: requestMode,
+                    fellBackFromStreaming: fellBackFromStreaming,
+                    httpResponse: httpResponse,
+                    responseHeadersReceivedMS: responseHeadersReceivedMS,
+                    transportFailureStage: .awaitingResponseHeaders,
+                    networkError: nil
+                )
+            )
         }
 
         return TranscriptionResponseMetadata(
@@ -216,7 +327,79 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             httpStatusCode: httpResponse.statusCode,
             requestID: headerValue("x-request-id", from: httpResponse),
             openAIProcessingMS: headerValue("openai-processing-ms", from: httpResponse).flatMap(Int.init),
-            contentType: headerValue("content-type", from: httpResponse)
+            contentType: headerValue("content-type", from: httpResponse),
+            responseHeadersReceivedMS: responseHeadersReceivedMS
+        )
+    }
+
+    nonisolated private static func readAllBytes(from bytes: URLSession.AsyncBytes) async throws -> Data {
+        var data = Data()
+        var iterator = bytes.makeAsyncIterator()
+
+        while let byte = try await iterator.next() {
+            data.append(byte)
+        }
+
+        return data
+    }
+
+    nonisolated private static func elapsedMilliseconds(
+        since start: ContinuousClock.Instant,
+        clock: ContinuousClock
+    ) -> Int {
+        let duration = start.duration(to: clock.now)
+        let components = duration.components
+        let secondsMS = components.seconds * 1000
+        let attosecondsMS = components.attoseconds / 1_000_000_000_000_000
+        return Int(secondsMS + attosecondsMS)
+    }
+
+    nonisolated private static func networkFailure(
+        from error: Error,
+        requestMode: TranscriptionRequestMode,
+        fellBackFromStreaming: Bool,
+        responseMetadata: TranscriptionResponseMetadata? = nil,
+        responseHeadersReceivedMS: Int?,
+        transportFailureStage: TranscriptionTransportFailureStage
+    ) -> TranscriptionBackendError {
+        .networkUnavailable(
+            failureContext(
+                requestMode: requestMode,
+                fellBackFromStreaming: fellBackFromStreaming,
+                responseMetadata: responseMetadata,
+                responseHeadersReceivedMS: responseHeadersReceivedMS,
+                transportFailureStage: transportFailureStage,
+                networkError: error
+            )
+        )
+    }
+
+    nonisolated private static func failureContext(
+        requestMode: TranscriptionRequestMode,
+        fellBackFromStreaming: Bool,
+        httpResponse: HTTPURLResponse? = nil,
+        responseMetadata: TranscriptionResponseMetadata? = nil,
+        responseHeadersReceivedMS: Int?,
+        transportFailureStage: TranscriptionTransportFailureStage?,
+        networkError: Error?
+    ) -> TranscriptionFailureContext {
+        let resolvedHTTPResponse = httpResponse
+        let resolvedMetadata = responseMetadata
+        let nsError = networkError as NSError?
+        let urlError = networkError as? URLError
+
+        return TranscriptionFailureContext(
+            requestMode: requestMode,
+            fellBackFromStreaming: fellBackFromStreaming,
+            httpStatusCode: resolvedMetadata?.httpStatusCode ?? resolvedHTTPResponse?.statusCode,
+            requestID: resolvedMetadata?.requestID ?? resolvedHTTPResponse.flatMap { headerValue("x-request-id", from: $0) },
+            openAIProcessingMS: resolvedMetadata?.openAIProcessingMS ?? resolvedHTTPResponse.flatMap { headerValue("openai-processing-ms", from: $0) }.flatMap(Int.init),
+            contentType: resolvedMetadata?.contentType ?? resolvedHTTPResponse.flatMap { headerValue("content-type", from: $0) },
+            responseHeadersReceivedMS: resolvedMetadata?.responseHeadersReceivedMS ?? responseHeadersReceivedMS,
+            transportFailureStage: transportFailureStage,
+            networkErrorDomain: nsError?.domain,
+            networkErrorCode: nsError?.code,
+            networkErrorCodeName: urlError.map { String(describing: $0.code) }
         )
     }
 
@@ -230,7 +413,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
     ) async throws -> String {
         var eventLines: [String] = []
         var accumulatedDeltaText = ""
-        var plainTextFallbackLines: [String] = []
+        var sawStructuredStreamingLine = false
 
         for try await rawLine in bytes.lines {
             let line = rawLine.trimmingCharacters(in: .newlines)
@@ -247,9 +430,8 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             }
 
             if line.hasPrefix("event:") || line.hasPrefix("data:") {
+                sawStructuredStreamingLine = true
                 eventLines.append(line)
-            } else {
-                plainTextFallbackLines.append(line)
             }
         }
 
@@ -260,14 +442,12 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             return completedText
         }
 
-        let plainTextFallback = plainTextFallbackLines
-            .joined(separator: "\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if !plainTextFallback.isEmpty {
-            return plainTextFallback
+        let accumulatedText = accumulatedDeltaText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sawStructuredStreamingLine, !accumulatedText.isEmpty {
+            return accumulatedText
         }
 
-        return accumulatedDeltaText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ""
     }
 
     nonisolated private static func parseStreamEvent(
@@ -321,6 +501,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         boundary: String,
         model: String,
         responseFormat: String,
+        language: String,
         stream: Bool
     ) -> Data {
         var body = Data()
@@ -332,6 +513,10 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         body.appendUTF8("--\(boundary)\r\n")
         body.appendUTF8("Content-Disposition: form-data; name=\"response_format\"\r\n\r\n")
         body.appendUTF8("\(responseFormat)\r\n")
+
+        body.appendUTF8("--\(boundary)\r\n")
+        body.appendUTF8("Content-Disposition: form-data; name=\"language\"\r\n\r\n")
+        body.appendUTF8("\(language)\r\n")
 
         if stream {
             body.appendUTF8("--\(boundary)\r\n")

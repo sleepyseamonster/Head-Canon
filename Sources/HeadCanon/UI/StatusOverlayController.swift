@@ -46,7 +46,7 @@ final class StatusOverlayController: StatusOverlayPresenting {
         switch status {
         case .ready, .setupRequired:
             dismiss(after: .zero)
-        case .recording, .transcribing:
+        case .recording, .finalizingRecording, .startingTranscription, .transcribing:
             dismissTask?.cancel()
             show(status: status)
         case .inserted:
@@ -193,6 +193,12 @@ private struct OverlayAppearance {
         case .recording:
             symbolName = "mic.fill"
             tint = .red
+        case .finalizingRecording:
+            symbolName = "waveform"
+            tint = .orange
+        case .startingTranscription:
+            symbolName = "arrow.up.circle.fill"
+            tint = .blue
         case .transcribing:
             symbolName = "waveform.and.magnifyingglass"
             tint = Color(

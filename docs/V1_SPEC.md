@@ -153,6 +153,7 @@ Planned backends:
 ### Insertion
 - Direct accessibility-based text insertion remains the preferred path for strong native text targets.
 - Clipboard paste is a first-class insertion transport for partial-AX and opaque editors.
+- Known opaque editors such as `Codex` should stay on paste-oriented transports even when Accessibility exposes writable value semantics.
 - The app must not require a focused AX text element as a hard precondition for every insertion path.
 - Clipboard-based insertion must preserve and restore the user’s clipboard contents whenever feasible.
 - If insertion confidence is too low, the app must refuse to insert rather than risk wrong-app text delivery.
@@ -414,4 +415,4 @@ Before adding polish or new features, the team must prove the following in order
 
 ## Open Questions
 - whether to keep dock icon during early development
-- whether clipboard transport should be the default path for partial-AX editors or only for explicitly classified opaque editors
+- whether additional editors should join the explicit opaque-editor allowlist over time

@@ -9,6 +9,7 @@ enum TextInsertionError: LocalizedError {
     case accessibilityAPIError(String)
     case unsupportedTarget
     case pasteFailed
+    case pasteDeliveryUnconfirmed(String)
     case pasteFallbackDisabled
     case secureTarget
     case focusChanged
@@ -26,6 +27,8 @@ enum TextInsertionError: LocalizedError {
             "The focused target does not support direct insertion or paste fallback."
         case .pasteFailed:
             "Head Canon could not paste into the focused app."
+        case .pasteDeliveryUnconfirmed(let message):
+            message
         case .pasteFallbackDisabled:
             "Direct insertion is unavailable and paste fallback is disabled."
         case .secureTarget:
@@ -233,6 +236,10 @@ struct TargetCapabilities: Equatable {
             return identifier
         }
         return role ?? "Unknown"
+    }
+
+    var prefersOpaquePasteTransport: Bool {
+        capabilityProfile == .opaquePasteCapable
     }
 }
 
@@ -489,6 +496,81 @@ enum PlaceholderValueClassifier {
     }
 }
 
+enum PasteVerificationDecision: Equatable {
+    case verified
+    case unavailable
+    case failed(String)
+}
+
+enum PasteVerificationMode: Equatable {
+    case transcriptPresenceOnly
+    case exactReplacementPreferred
+}
+
+enum PasteVerificationDecider {
+    static func mode(for capabilityProfile: ApplicationCapabilityProfile) -> PasteVerificationMode {
+        switch capabilityProfile {
+        case .nativeAXStrong:
+            .exactReplacementPreferred
+        case .partialAXEditor, .opaquePasteCapable, .unknownConservative:
+            .transcriptPresenceOnly
+        }
+    }
+
+    static func decide(
+        beforeValue: String?,
+        beforeSelectedRange: CFRange?,
+        afterValue: String?,
+        insertedText: String,
+        mode: PasteVerificationMode
+    ) -> PasteVerificationDecision {
+        guard !insertedText.isEmpty else {
+            return .verified
+        }
+
+        guard let afterValue else {
+            return .unavailable
+        }
+
+        if let beforeValue, afterValue == beforeValue {
+            return .failed("Head Canon pasted into the focused app, but the active field did not change.")
+        }
+
+        if mode == .exactReplacementPreferred {
+            if
+                let beforeValue,
+                let beforeSelectedRange,
+                let expectedValue = expectedValue(
+                    beforeValue: beforeValue,
+                    selectedRange: beforeSelectedRange,
+                    insertedText: insertedText
+                ),
+                afterValue != expectedValue
+            {
+                return .failed("Head Canon pasted into the focused app, but the resulting field contents did not match the dictated text.")
+            }
+        }
+
+        guard afterValue.contains(insertedText) else {
+            return .failed("Head Canon pasted into the focused app but could not confirm that the dictated text appeared in the active field.")
+        }
+
+        return .verified
+    }
+
+    private static func expectedValue(
+        beforeValue: String,
+        selectedRange: CFRange,
+        insertedText: String
+    ) -> String? {
+        let valueNSString = beforeValue as NSString
+        let location = max(0, min(selectedRange.location, valueNSString.length))
+        let length = max(0, min(selectedRange.length, valueNSString.length - location))
+        let safeRange = NSRange(location: location, length: length)
+        return valueNSString.replacingCharacters(in: safeRange, with: insertedText)
+    }
+}
+
 enum PlaceholderCleanupDecision: Equatable {
     case notNeeded
     case remove(NSRange)
@@ -570,6 +652,28 @@ enum InsertionStrategyPlanner {
             )
         }
 
+        if capabilities.prefersOpaquePasteTransport && capabilities.pasteCompatible && allowPasteFallback {
+            let strategy: InsertionStrategy = capabilities.appLevelPasteOnly ? .appClipboardPaste : .customEditorPaste
+            let reason: String = if capabilities.appLevelPasteOnly {
+                "The app is a known opaque editor, so Head Canon will use app-level clipboard paste while frontmost-app safety holds and will use focused cleanup only when AX focus metadata is available."
+            } else {
+                "The app is a known opaque editor, so Head Canon will prefer paste-based insertion even though AX exposes writable fields."
+            }
+
+            return InsertionAttemptReport(
+                observedAt: observedAt,
+                observationLabel: observationLabel,
+                capabilities: capabilities,
+                allowPasteFallback: allowPasteFallback,
+                chosenStrategy: strategy,
+                appliedStrategy: nil,
+                predictedFailureClass: nil,
+                strategyReason: reason,
+                placeholderHandlingOutcome: nil,
+                rejectedStrategies: rejectedStrategies
+            )
+        }
+
         if capabilities.directInsertCompatible {
             let reason = capabilities.placeholderLikelyActive
                 ? "The focused target exposes writable AX value semantics, and Head Canon can sanitize placeholder-backed inline text before inserting."
@@ -601,7 +705,7 @@ enum InsertionStrategyPlanner {
             if capabilities.placeholderLikelyActive {
                 reason = "The target's AX value matches its placeholder text, so Head Canon will avoid direct replacement and use paste instead."
             } else if strategy == .appClipboardPaste {
-                reason = "The app is known to accept clipboard-based insertion even when it does not expose a focused editable AX element."
+                reason = "The app is known to accept app-level clipboard paste while it remains frontmost, and Head Canon will use focused cleanup only when AX focus metadata is available."
             } else {
                 reason = strategy == .customEditorPaste
                     ? "The target looks editable but does not expose the full AX text-field contract, so paste is the intended path."
@@ -651,7 +755,14 @@ enum InsertionStrategyPlanner {
     ) -> [InsertionStrategyRejection] {
         var rejections: [InsertionStrategyRejection] = []
 
-        if !capabilities.directInsertCompatible {
+        if capabilities.prefersOpaquePasteTransport {
+            rejections.append(
+                InsertionStrategyRejection(
+                    strategy: .axValueReplacement,
+                    reason: "Known opaque editors stay on paste-oriented transports even when AX exposes writable value semantics."
+                )
+            )
+        } else if !capabilities.directInsertCompatible {
             rejections.append(
                 InsertionStrategyRejection(
                     strategy: .axValueReplacement,
@@ -760,20 +871,120 @@ enum InsertionStrategyPlanner {
 }
 
 enum PlaceholderCleanupPlanner {
-    static func shouldAttemptFocusedCleanup(
+    enum Plan: Equatable {
+        case useFocusedTarget
+        case skipCleanup
+        case blockUnsafeBlindPaste
+    }
+
+    static func plan(
         strategy: InsertionStrategy,
         plannedContextKind: InsertionContextKind,
         currentFocusProcessMatches: Bool,
         currentFocusAvailable: Bool
-    ) -> Bool {
+    ) -> Plan {
         switch plannedContextKind {
         case .axFocusedElement:
-            return currentFocusAvailable
+            return currentFocusAvailable ? .useFocusedTarget : .skipCleanup
         case .appOnly:
-            return strategy == .appClipboardPaste
-                && currentFocusAvailable
-                && currentFocusProcessMatches
+            guard strategy == .appClipboardPaste else {
+                return .skipCleanup
+            }
+            guard currentFocusAvailable else {
+                // Known opaque editors can still accept app-level paste even when AX focus
+                // metadata is unavailable at insertion time. In that case we skip placeholder
+                // cleanup instead of planning a route that always self-blocks.
+                return .skipCleanup
+            }
+            guard currentFocusProcessMatches else {
+                return .blockUnsafeBlindPaste
+            }
+            return .useFocusedTarget
         }
+    }
+
+}
+
+enum FocusTargetEquivalenceDecider {
+    static func appearEquivalent(
+        lhs: SecureTextFieldMetadata,
+        rhs: SecureTextFieldMetadata,
+        allowsWeakTextTargetFallback: Bool
+    ) -> Bool {
+        guard lhs.role == rhs.role, lhs.subrole == rhs.subrole else {
+            return false
+        }
+
+        if matchingNonEmpty(lhs.domIdentifier, rhs.domIdentifier) {
+            return true
+        }
+
+        if matchingNonEmpty(lhs.identifier, rhs.identifier) {
+            return true
+        }
+
+        guard allowsWeakTextTargetFallback else {
+            return false
+        }
+
+        guard !hasConflictingStableIdentifier(lhs.domIdentifier, rhs.domIdentifier),
+              !hasConflictingStableIdentifier(lhs.identifier, rhs.identifier),
+              isWeaklyIdentifiableTextTarget(lhs),
+              isWeaklyIdentifiableTextTarget(rhs)
+        else {
+            return false
+        }
+
+        return compatibleWeakLabel(lhs.title, rhs.title)
+            && compatibleWeakLabel(lhs.placeholderValue, rhs.placeholderValue)
+    }
+
+    private static func matchingNonEmpty(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs = normalized(lhs), let rhs = normalized(rhs) else {
+            return false
+        }
+        return lhs == rhs
+    }
+
+    private static func hasConflictingStableIdentifier(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs = normalized(lhs), let rhs = normalized(rhs) else {
+            return false
+        }
+        return lhs != rhs
+    }
+
+    private static func compatibleWeakLabel(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let lhs = normalized(lhs), let rhs = normalized(rhs) else {
+            return true
+        }
+        return lhs == rhs
+    }
+
+    private static func isWeaklyIdentifiableTextTarget(_ metadata: SecureTextFieldMetadata) -> Bool {
+        let searchable = [
+            metadata.role,
+            metadata.roleDescription,
+            metadata.title,
+            metadata.placeholderValue,
+        ]
+        .compactMap { normalized($0) }
+
+        guard !searchable.isEmpty else {
+            return false
+        }
+
+        return searchable.contains { value in
+            value.contains("text area")
+                || value.contains("textarea")
+                || value.contains("editor")
+                || value.contains("editable text")
+                || value == (kAXTextAreaRole as String).lowercased()
+        }
+    }
+
+    private static func normalized(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed.lowercased()
     }
 }
 
@@ -782,6 +993,11 @@ protocol TextInsertionServicing {
     func captureFocusedTarget() throws -> any TextInsertionTargetHandle
     func planInsertion(
         target: (any TextInsertionTargetHandle)?,
+        allowPasteFallback: Bool,
+        observationLabel: String
+    ) throws -> InsertionAttemptReport
+    func planExecutionInsertion(
+        relativeTo target: (any TextInsertionTargetHandle)?,
         allowPasteFallback: Bool,
         observationLabel: String
     ) throws -> InsertionAttemptReport
@@ -885,7 +1101,8 @@ struct TextInsertionService: TextInsertionServicing {
     private let selectAllVirtualKey: CGKeyCode = 0
     private let deleteVirtualKey: CGKeyCode = 51
     private let standardPasteboardRestoreDelay: Duration = .milliseconds(180)
-    private let opaqueAppPasteboardRestoreDelay: Duration = .milliseconds(120)
+    private let customEditorPasteboardRestoreDelay: Duration = .milliseconds(180)
+    private let appClipboardPasteboardRestoreDelay: Duration = .milliseconds(450)
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "local.headcanon.app",
         category: "text-insertion"
@@ -912,13 +1129,26 @@ struct TextInsertionService: TextInsertionServicing {
         )
     }
 
+    func planExecutionInsertion(
+        relativeTo target: (any TextInsertionTargetHandle)?,
+        allowPasteFallback: Bool,
+        observationLabel: String = "Current Context"
+    ) throws -> InsertionAttemptReport {
+        let executionContext = try executionPlanningContext(from: resolvedContext(from: target))
+        return InsertionStrategyPlanner.plan(
+            capabilities: capabilities(for: executionContext),
+            allowPasteFallback: allowPasteFallback,
+            observationLabel: observationLabel
+        )
+    }
+
     func insert(
         _ text: String,
         target: (any TextInsertionTargetHandle)?,
         allowPasteFallback: Bool,
         observationLabel: String = "Current Context"
     ) async throws -> InsertionAttemptReport {
-        let resolvedTarget = try resolvedContext(from: target)
+        let resolvedTarget = try executionPlanningContext(from: resolvedContext(from: target))
         let attempt = InsertionStrategyPlanner.plan(
             capabilities: capabilities(for: resolvedTarget),
             allowPasteFallback: allowPasteFallback,
@@ -1010,6 +1240,30 @@ struct TextInsertionService: TextInsertionServicing {
         throw TextInsertionError.unsupportedTarget
     }
 
+    private func executionPlanningContext(from originalTarget: ResolvedInsertionContext) throws -> ResolvedInsertionContext {
+        let originalCapabilities = capabilities(for: originalTarget)
+        guard originalCapabilities.prefersOpaquePasteTransport else {
+            return originalTarget
+        }
+
+        let currentContext = try currentInsertionContext()
+        guard currentContext.processIdentifier == originalTarget.processIdentifier else {
+            throw TextInsertionError.focusChanged
+        }
+
+        switch (originalTarget, currentContext) {
+        case (.ax(let originalFocusTarget), .ax(let currentFocusTarget)):
+            guard focusTargetsAppearEquivalent(currentFocusTarget, originalFocusTarget) else {
+                throw TextInsertionError.focusChanged
+            }
+            return .ax(currentFocusTarget)
+        case (.application, _):
+            return currentContext
+        case (.ax, .application):
+            throw TextInsertionError.focusChanged
+        }
+    }
+
     private func capabilities(for context: ResolvedInsertionContext) -> TargetCapabilities {
         switch context {
         case .ax(let target):
@@ -1035,7 +1289,7 @@ struct TextInsertionService: TextInsertionServicing {
                 valueSettable: false,
                 selectedTextRangeReadable: false,
                 selectedTextReadable: false,
-                editable: pasteCompatible,
+                editable: false,
                 secure: false,
                 pasteCompatible: pasteCompatible,
                 directInsertCompatible: false,
@@ -1167,6 +1421,11 @@ struct TextInsertionService: TextInsertionServicing {
             return DirectInsertResult(didInsert: false, placeholderHandlingOutcome: .noneNeeded)
         }
 
+        guard let verifiedValue = try copyStringAttribute(kAXValueAttribute, from: element), verifiedValue == updatedValue else {
+            logger.error("AX value verification failed after direct insertion; falling back to paste transport.")
+            return DirectInsertResult(didInsert: false, placeholderHandlingOutcome: .noneNeeded)
+        }
+
         var cursorRange = CFRange(location: location + (text as NSString).length, length: 0)
 
         if let newRange = AXValueCreate(.cfRange, &cursorRange) {
@@ -1207,6 +1466,13 @@ struct TextInsertionService: TextInsertionServicing {
             guard currentCapabilities.editable else {
                 throw TextInsertionError.unsupportedTarget
             }
+            guard
+                case .ax(let originalFocusTarget) = originalTarget,
+                case .ax(let currentTarget) = currentContext,
+                focusTargetsAppearEquivalent(currentTarget, originalFocusTarget)
+            else {
+                throw TextInsertionError.focusChanged
+            }
         case .appClipboardPaste:
             let currentCapabilities = capabilities(for: currentContext)
             guard currentCapabilities.pasteCompatible else {
@@ -1237,15 +1503,20 @@ struct TextInsertionService: TextInsertionServicing {
         let snapshot = PasteboardSnapshot.capture(from: pasteboard)
 
         try validateTargetStillEligible(target, strategy: strategy)
-
         let placeholderHandlingOutcome: PlaceholderHandlingOutcome
-        if let cleanupTarget = placeholderCleanupTarget(for: target, strategy: strategy) {
+        switch placeholderCleanupPlan(for: target, strategy: strategy) {
+        case .useFocusedTarget(let cleanupTarget):
             placeholderHandlingOutcome = try await clearPlaceholderIfNeeded(beforePastingInto: cleanupTarget)
-        } else {
+        case .skipCleanup:
             placeholderHandlingOutcome = .noneNeeded
+        case .blockUnsafeBlindPaste:
+            throw TextInsertionError.placeholderCleanupRequired(
+                "Head Canon could not verify the focused text field in this app, so it preserved the transcript instead of blindly pasting into a placeholder-prone composer."
+            )
         }
 
         try validateTargetStillEligible(target, strategy: strategy)
+        let verificationBaseline = capturePasteVerificationSnapshot(for: target)
 
         pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else {
@@ -1253,8 +1524,10 @@ struct TextInsertionService: TextInsertionServicing {
         }
         let injectedChangeCount = pasteboard.changeCount
 
+        try? await Task.sleep(for: pasteboardDispatchDelay(for: strategy))
+
         do {
-            guard simulatePasteKeystroke(for: target.processIdentifier) else {
+            guard simulatePasteKeystroke(for: target.processIdentifier, strategy: strategy) else {
                 throw TextInsertionError.pasteFailed
             }
         } catch {
@@ -1265,6 +1538,7 @@ struct TextInsertionService: TextInsertionServicing {
         }
 
         try? await Task.sleep(for: pasteboardRestoreDelay(for: strategy))
+        try verifyPasteDelivery(of: text, into: target, baseline: verificationBaseline)
 
         // Avoid clobbering newer clipboard contents if the user changed them during fallback.
         guard pasteboard.changeCount == injectedChangeCount else {
@@ -1277,18 +1551,101 @@ struct TextInsertionService: TextInsertionServicing {
 
     private func pasteboardRestoreDelay(for strategy: InsertionStrategy) -> Duration {
         switch strategy {
-        case .appClipboardPaste, .customEditorPaste:
-            return opaqueAppPasteboardRestoreDelay
+        case .appClipboardPaste:
+            return appClipboardPasteboardRestoreDelay
+        case .customEditorPaste:
+            return customEditorPasteboardRestoreDelay
         case .pasteFallback, .axValueReplacement, .unsupported:
             return standardPasteboardRestoreDelay
         }
     }
 
-    private func simulatePasteKeystroke(for processIdentifier: pid_t) -> Bool {
-        simulateKeystroke(
+    private func pasteboardDispatchDelay(for strategy: InsertionStrategy) -> Duration {
+        switch strategy {
+        case .appClipboardPaste, .customEditorPaste:
+            return .milliseconds(45)
+        case .pasteFallback, .axValueReplacement, .unsupported:
+            return .milliseconds(20)
+        }
+    }
+
+    private func capturePasteVerificationSnapshot(for target: ResolvedInsertionContext) -> PasteVerificationSnapshot? {
+        guard
+            let currentFocusTarget = try? focusedTarget(),
+            currentFocusTarget.processIdentifier == target.processIdentifier,
+            !isSecureTextField(currentFocusTarget.element)
+        else {
+            return nil
+        }
+
+        let currentValue = try? copyStringAttribute(kAXValueAttribute, from: currentFocusTarget.element)
+        let currentSelectedRange = try? selectedRange(for: currentFocusTarget.element)
+        return PasteVerificationSnapshot(
+            target: currentFocusTarget,
+            value: currentValue,
+            selectedRange: currentSelectedRange
+        )
+    }
+
+    private func verifyPasteDelivery(
+        of text: String,
+        into target: ResolvedInsertionContext,
+        baseline: PasteVerificationSnapshot?
+    ) throws {
+        guard let baseline else {
+            return
+        }
+
+        let currentContext = try currentInsertionContext()
+        guard currentContext.processIdentifier == target.processIdentifier else {
+            throw TextInsertionError.focusChanged
+        }
+
+        guard let currentFocusTarget = currentContext.focusTarget else {
+            return
+        }
+
+        guard focusTargetsAppearEquivalent(currentFocusTarget, baseline.target) else {
+            throw TextInsertionError.focusChanged
+        }
+
+        let afterValue = try? copyStringAttribute(kAXValueAttribute, from: currentFocusTarget.element)
+        let verificationMode = PasteVerificationDecider.mode(
+            for: capabilities(for: currentContext).capabilityProfile
+        )
+        switch PasteVerificationDecider.decide(
+            beforeValue: baseline.value,
+            beforeSelectedRange: baseline.selectedRange,
+            afterValue: afterValue,
+            insertedText: text,
+            mode: verificationMode
+        ) {
+        case .verified, .unavailable:
+            return
+        case .failed(let message):
+            throw TextInsertionError.pasteDeliveryUnconfirmed(message)
+        }
+    }
+
+    private func simulatePasteKeystroke(
+        for processIdentifier: pid_t,
+        strategy: InsertionStrategy
+    ) -> Bool {
+        guard strategy == .appClipboardPaste else {
+            return simulateKeystroke(
+                virtualKey: pasteVirtualKey,
+                flags: .maskCommand,
+                processIdentifier: processIdentifier
+            )
+        }
+
+        guard isApplicationFrontmost(processIdentifier) else {
+            return false
+        }
+
+        return simulateFrontmostKeystroke(
             virtualKey: pasteVirtualKey,
-            flags: .maskCommand,
-            processIdentifier: processIdentifier
+            flags: .maskCommand
         )
     }
 
@@ -1332,6 +1689,28 @@ struct TextInsertionService: TextInsertionServicing {
         keyUp.flags = flags
         keyDown.postToPid(processIdentifier)
         keyUp.postToPid(processIdentifier)
+        return true
+    }
+
+    private func simulateFrontmostKeystroke(
+        virtualKey: CGKeyCode,
+        flags: CGEventFlags
+    ) -> Bool {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else {
+            return false
+        }
+
+        guard
+            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
+            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false)
+        else {
+            return false
+        }
+
+        keyDown.flags = flags
+        keyUp.flags = flags
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
         return true
     }
 
@@ -1384,10 +1763,6 @@ struct TextInsertionService: TextInsertionServicing {
         directInsertCompatible: Bool = false,
         editable: Bool = false
     ) -> ApplicationCapabilityProfile {
-        if directInsertCompatible {
-            return .nativeAXStrong
-        }
-
         let normalizedName = applicationName.lowercased()
         switch bundleIdentifier {
         case "com.openai.codex",
@@ -1411,6 +1786,10 @@ struct TextInsertionService: TextInsertionServicing {
             || normalizedName.contains("claude")
         {
             return .opaquePasteCapable
+        }
+
+        if directInsertCompatible {
+            return .nativeAXStrong
         }
 
         if editable {
@@ -1504,38 +1883,66 @@ struct TextInsertionService: TextInsertionServicing {
         }
     }
 
-    private func placeholderCleanupTarget(
+    private enum PlaceholderCleanupExecutionPlan {
+        case useFocusedTarget(FocusTarget)
+        case skipCleanup
+        case blockUnsafeBlindPaste
+    }
+
+    private func placeholderCleanupPlan(
         for target: ResolvedInsertionContext,
         strategy: InsertionStrategy
-    ) -> FocusTarget? {
+    ) -> PlaceholderCleanupExecutionPlan {
         switch target {
         case .ax(let focusedTarget):
-            let shouldAttemptCleanup = PlaceholderCleanupPlanner.shouldAttemptFocusedCleanup(
+            let currentFocusTarget = try? self.focusedTarget()
+            let currentFocusProcessMatches = currentFocusTarget?.processIdentifier == focusedTarget.processIdentifier
+            let currentFocusEquivalent = if let currentFocusTarget {
+                focusTargetsAppearEquivalent(currentFocusTarget, focusedTarget)
+            } else {
+                false
+            }
+            let plan = PlaceholderCleanupPlanner.plan(
                 strategy: strategy,
                 plannedContextKind: .axFocusedElement,
-                currentFocusProcessMatches: true,
-                currentFocusAvailable: true
+                currentFocusProcessMatches: currentFocusProcessMatches && currentFocusEquivalent,
+                currentFocusAvailable: currentFocusTarget != nil
             )
-            return shouldAttemptCleanup ? focusedTarget : nil
+            switch plan {
+            case .useFocusedTarget:
+                if let currentFocusTarget, currentFocusEquivalent, !isSecureTextField(currentFocusTarget.element) {
+                    return .useFocusedTarget(currentFocusTarget)
+                }
+                return .blockUnsafeBlindPaste
+            case .skipCleanup:
+                return .skipCleanup
+            case .blockUnsafeBlindPaste:
+                return .blockUnsafeBlindPaste
+            }
         case .application(let applicationTarget):
             let currentFocusTarget = try? focusedTarget()
             let currentFocusProcessMatches = currentFocusTarget?.processIdentifier == applicationTarget.processIdentifier
-            let shouldAttemptCleanup = PlaceholderCleanupPlanner.shouldAttemptFocusedCleanup(
+            let plan = PlaceholderCleanupPlanner.plan(
                 strategy: strategy,
                 plannedContextKind: .appOnly,
                 currentFocusProcessMatches: currentFocusProcessMatches,
                 currentFocusAvailable: currentFocusTarget != nil
             )
 
-            guard
-                shouldAttemptCleanup,
-                let currentFocusTarget,
-                !isSecureTextField(currentFocusTarget.element)
-            else {
-                return nil
+            switch plan {
+            case .skipCleanup:
+                return .skipCleanup
+            case .blockUnsafeBlindPaste:
+                return .blockUnsafeBlindPaste
+            case .useFocusedTarget:
+                guard
+                    let currentFocusTarget,
+                    !isSecureTextField(currentFocusTarget.element)
+                else {
+                    return .blockUnsafeBlindPaste
+                }
+                return .useFocusedTarget(currentFocusTarget)
             }
-
-            return currentFocusTarget
         }
     }
 
@@ -1568,6 +1975,30 @@ struct TextInsertionService: TextInsertionServicing {
         )
 
         return result == .success
+    }
+
+    private func focusTargetsAppearEquivalent(_ lhs: FocusTarget, _ rhs: FocusTarget) -> Bool {
+        guard lhs.processIdentifier == rhs.processIdentifier else {
+            return false
+        }
+
+        if CFEqual(lhs.application, rhs.application), CFEqual(lhs.element, rhs.element) {
+            return true
+        }
+
+        let lhsMetadata = metadata(for: lhs.element)
+        let rhsMetadata = metadata(for: rhs.element)
+        let application = NSRunningApplication(processIdentifier: lhs.processIdentifier)
+        let applicationProfile = capabilityProfile(
+            for: application?.bundleIdentifier,
+            applicationName: application?.localizedName ?? "Unknown"
+        )
+
+        return FocusTargetEquivalenceDecider.appearEquivalent(
+            lhs: lhsMetadata,
+            rhs: rhsMetadata,
+            allowsWeakTextTargetFallback: applicationProfile == .opaquePasteCapable
+        )
     }
 
     private func selectedRange(for element: AXUIElement) throws -> CFRange? {
@@ -1753,6 +2184,12 @@ private final class ApplicationTextInsertionTargetHandle: TextInsertionTargetHan
     init(target: ApplicationTarget) {
         self.target = target
     }
+}
+
+private struct PasteVerificationSnapshot {
+    let target: FocusTarget
+    let value: String?
+    let selectedRange: CFRange?
 }
 
 private struct PasteboardSnapshot {

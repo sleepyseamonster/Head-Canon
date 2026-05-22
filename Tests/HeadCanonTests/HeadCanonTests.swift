@@ -169,9 +169,9 @@ struct HeadCanonTests {
 
 @Suite("Head Canon Transcription Backend")
 struct HeadCanonTranscriptionBackendTests {
-    @Test("Multipart transcription body uses the selected model name")
+    @Test("Multipart transcription body includes model, language, and stream flag")
     @MainActor
-    func multipartBodyIncludesSelectedModel() throws {
+    func multipartBodyIncludesSelectedModelAndLanguage() throws {
         let input = BoundedAudioInput(
             fileURL: URL(fileURLWithPath: "/tmp/test.m4a"),
             mimeType: "audio/m4a",
@@ -183,6 +183,7 @@ struct HeadCanonTranscriptionBackendTests {
             boundary: "TestBoundary",
             model: OpenAITranscriptionModel.gpt4oTranscribe.rawValue,
             responseFormat: "json",
+            language: "en",
             stream: true
         )
         let bodyString = String(decoding: body, as: UTF8.self)
@@ -191,6 +192,8 @@ struct HeadCanonTranscriptionBackendTests {
         #expect(bodyString.contains(OpenAITranscriptionModel.gpt4oTranscribe.rawValue))
         #expect(bodyString.contains("name=\"response_format\""))
         #expect(bodyString.contains("json"))
+        #expect(bodyString.contains("name=\"language\""))
+        #expect(bodyString.contains("en"))
         #expect(bodyString.contains("name=\"stream\""))
         #expect(bodyString.contains("true"))
     }
@@ -209,6 +212,7 @@ struct HeadCanonTranscriptionBackendTests {
             boundary: "TestBoundary",
             model: OpenAITranscriptionModel.gpt4oMiniTranscribe.rawValue,
             responseFormat: "text",
+            language: "en",
             stream: false
         )
         let bodyString = String(decoding: body, as: UTF8.self)
@@ -217,8 +221,46 @@ struct HeadCanonTranscriptionBackendTests {
         #expect(bodyString.contains(OpenAITranscriptionModel.gpt4oMiniTranscribe.rawValue))
         #expect(bodyString.contains("name=\"response_format\""))
         #expect(bodyString.contains("text"))
+        #expect(bodyString.contains("name=\"language\""))
+        #expect(bodyString.contains("en"))
         #expect(!bodyString.contains("name=\"stream\""))
     }
+
+    @Test("Bounded transcription uses standard completed-recording by default")
+    @MainActor
+    func boundedTranscriptionUsesStandardRequestModeByDefault() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headcanon-transcription-default-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        try Data("fake audio".utf8).write(to: fileURL)
+        defer {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        StandardTranscriptionURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [StandardTranscriptionURLProtocol.self]
+        let backend = OpenAIBoundedTranscriptionBackend(
+            modelProvider: { .gpt4oMiniTranscribe },
+            session: URLSession(configuration: configuration)
+        )
+
+        let result = try await backend.transcribe(
+            BoundedAudioInput(fileURL: fileURL, mimeType: "audio/m4a", duration: 1.0),
+            apiKey: "test-key"
+        )
+        let capturedRequest = StandardTranscriptionURLProtocol.capturedRequests().first
+
+        #expect(result.text == "hello from standard mode")
+        #expect(result.responseMetadata?.requestMode == .standardCompletedRecording)
+        #expect(result.responseMetadata?.fellBackFromStreaming == false)
+        #expect(capturedRequest?.acceptHeader == "text/plain")
+        #expect(capturedRequest?.bodyString.contains("name=\"response_format\"") == true)
+        #expect(capturedRequest?.bodyString.contains("text") == true)
+        #expect(capturedRequest?.bodyString.contains("name=\"stream\"") == false)
+        #expect(StandardTranscriptionURLProtocol.capturedRequests().count == 1)
+    }
+
 }
 
 @Suite("Head Canon Status Overlay")
@@ -642,10 +684,12 @@ struct HeadCanonSecurityTests {
 
         let hotkeyManager = StubHotkeyManager()
         let textInsertionService = RecordingTextInsertionService()
+        let clipboardWriter = RecordingClipboardWriter()
         let model = makeReadyModel(
             preferences: preferences,
             textInsertionService: textInsertionService,
-            hotkeyManager: hotkeyManager
+            hotkeyManager: hotkeyManager,
+            clipboardWriter: clipboardWriter
         )
 
         await model.bootstrap()
@@ -654,9 +698,88 @@ struct HeadCanonSecurityTests {
         await waitForWorkflowCompletion(model)
 
         #expect(model.workflowStatus == .failed)
-        #expect(model.lastErrorMessage == TextInsertionError.pasteFallbackDisabled.localizedDescription)
+        #expect(model.lastErrorMessage == "\(TextInsertionError.pasteFallbackDisabled.localizedDescription) Transcript copied to clipboard for manual paste.")
         #expect(textInsertionService.lastAllowPasteFallback == false)
+        #expect(clipboardWriter.writes == ["stub"])
         #expect(model.lastFailureStage == .insertion)
+    }
+
+    @Test("Insertion failure copies the transcript to the clipboard for recovery")
+    @MainActor
+    func insertionFailureCopiesTranscriptToClipboard() async {
+        let hotkeyManager = StubHotkeyManager()
+        let textInsertionService = RecordingTextInsertionService()
+        textInsertionService.insertError = TextInsertionError.pasteFailed
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let clipboardWriter = RecordingClipboardWriter()
+        let model = makeReadyModel(
+            textInsertionService: textInsertionService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager,
+            clipboardWriter: clipboardWriter
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(clipboardWriter.writes == ["stub"])
+        #expect(model.lastClipboardRecovery == ClipboardRecoveryState(transcriptCopied: true, reason: .insertionFailure))
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.clipboardRecovery?.transcriptCopied == true)
+        #expect(persistedRecords.first?.clipboardRecovery?.reason == ClipboardRecoveryReason.insertionFailure.rawValue)
+    }
+
+    @Test("Missing insertion target copies the transcript to the clipboard for recovery")
+    @MainActor
+    func missingInsertionTargetCopiesTranscriptToClipboard() async {
+        let hotkeyManager = StubHotkeyManager()
+        let textInsertionService = RecordingTextInsertionService()
+        textInsertionService.captureError = TextInsertionError.focusUnavailable
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let clipboardWriter = RecordingClipboardWriter()
+        let model = makeReadyModel(
+            textInsertionService: textInsertionService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager,
+            clipboardWriter: clipboardWriter
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(clipboardWriter.writes == ["stub"])
+        #expect(model.lastClipboardRecovery == ClipboardRecoveryState(transcriptCopied: true, reason: .missingInsertionTarget))
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.clipboardRecovery?.reason == ClipboardRecoveryReason.missingInsertionTarget.rawValue)
+    }
+
+    @Test("Transcription failure does not copy transcript to the clipboard")
+    @MainActor
+    func transcriptionFailureDoesNotCopyTranscriptToClipboard() async {
+        let hotkeyManager = StubHotkeyManager()
+        let clipboardWriter = RecordingClipboardWriter()
+        let model = makeReadyModel(
+            transcriptionBackend: FailingTranscriptionBackend(error: .networkUnavailable()),
+            hotkeyManager: hotkeyManager,
+            clipboardWriter: clipboardWriter
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(clipboardWriter.writes.isEmpty)
+        #expect(model.lastClipboardRecovery == nil)
     }
 
     @Test("Focused insertion analysis stores a routing report")
@@ -777,11 +900,12 @@ struct HeadCanonSecurityTests {
         #expect(model.workflowStatus == .inserted)
         #expect(model.lastCapturedInsertionReport?.observationLabel == "Release-Time Context")
         #expect(model.lastInsertionAttemptReport?.observationLabel == "Insert-Time Context")
+        #expect(textInsertionService.executionPlanningCallCount == 1)
         #expect(model.lastInsertionAttemptReport?.capabilities.contextKind == .axFocusedElement)
         #expect(model.lastInsertionAttemptReport?.capabilities.capabilityProfile == .partialAXEditor)
         #expect(model.lastRecordingAttemptDiagnostics?.stopTrigger == .carbonKeyUp)
         #expect(model.lastRecordingAttemptDiagnostics?.clipDuration == 1.25)
-        #expect(model.lastRecordingAttemptDiagnostics?.processingStateShownAt != nil)
+        #expect(model.lastRecordingAttemptDiagnostics?.finalizingStateShownAt != nil)
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptionRequestStartedAt != nil)
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseCompletedAt != nil)
         #expect(model.lastRecordingAttemptDiagnostics?.insertionCompletedAt != nil)
@@ -792,7 +916,7 @@ struct HeadCanonSecurityTests {
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptWordCount == 1)
         #expect(model.diagnosticsReport.contains("Latest recording attempt:"))
         #expect(model.diagnosticsReport.contains("Stop trigger: Carbon Key-Up"))
-        #expect(model.diagnosticsReport.contains("Processing state shown at:"))
+        #expect(model.diagnosticsReport.contains("Finalizing state shown at:"))
         #expect(model.diagnosticsReport.contains("Release to recording finalized:"))
         #expect(model.diagnosticsReport.contains("Request start to response complete:"))
         #expect(model.lastDiagnosticEvent?.summary == "Transcript inserted into the intended target context.")
@@ -863,6 +987,216 @@ struct HeadCanonSecurityTests {
         #expect(model.lastErrorMessage == "Head Canon stopped waiting for transcription after 0.05 seconds.")
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptionRequestStartedAt != nil)
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseCompletedAt != nil)
+        await transcriptionBackend.waitUntilCancelled()
+        #expect(transcriptionBackend.cancellationCount == 1)
+    }
+
+    @Test("Failed transcription records transport diagnostics")
+    @MainActor
+    func failedTranscriptionRecordsTransportDiagnostics() async {
+        let hotkeyManager = StubHotkeyManager()
+        let backend = FailingTranscriptionBackend(
+            error: .networkUnavailable(
+                TranscriptionFailureContext(
+                    requestMode: .standardCompletedRecording,
+                    fellBackFromStreaming: false,
+                    httpStatusCode: nil,
+                    requestID: nil,
+                    openAIProcessingMS: nil,
+                    contentType: nil,
+                    responseHeadersReceivedMS: 420,
+                    transportFailureStage: .awaitingResponseHeaders,
+                    networkErrorDomain: NSURLErrorDomain,
+                    networkErrorCode: URLError.Code.timedOut.rawValue,
+                    networkErrorCodeName: String(describing: URLError.Code.timedOut)
+                )
+            )
+        )
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == WorkflowStatus.failed)
+        #expect(model.lastFailureStage == DiagnosticFailureStage.transcription)
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionRequestMode == "Standard Completed Recording")
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseHeadersReceivedMS == 420)
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionTransportFailureStage == "awaitingResponseHeaders")
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionNetworkErrorDomain == NSURLErrorDomain)
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionNetworkErrorCode == URLError.Code.timedOut.rawValue)
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.backend.requestMode == "Standard Completed Recording")
+        #expect(persistedRecords.first?.backend.responseHeadersReceivedMS == 420)
+        #expect(persistedRecords.first?.backend.transportFailureStage == "awaitingResponseHeaders")
+        #expect(persistedRecords.first?.backend.networkErrorCode == URLError.Code.timedOut.rawValue)
+    }
+
+    @Test("Transient transcription request failure retries once and inserts only once")
+    @MainActor
+    func transientTranscriptionFailureRetriesOnce() async {
+        let hotkeyManager = StubHotkeyManager()
+        let textInsertionService = RecordingTextInsertionService()
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let backend = SequencedTranscriptionBackend(results: [
+            .failure(
+                .networkUnavailable(
+                    TranscriptionFailureContext(
+                        requestMode: .standardCompletedRecording,
+                        fellBackFromStreaming: false,
+                        httpStatusCode: nil,
+                        requestID: nil,
+                        openAIProcessingMS: nil,
+                        contentType: nil,
+                        responseHeadersReceivedMS: nil,
+                        transportFailureStage: .awaitingResponseHeaders,
+                        networkErrorDomain: NSURLErrorDomain,
+                        networkErrorCode: URLError.Code.timedOut.rawValue,
+                        networkErrorCodeName: String(describing: URLError.Code.timedOut)
+                    )
+                )
+            ),
+            .success(
+                TranscriptionResult(
+                    text: "recovered",
+                    backendID: "sequenced",
+                    duration: nil,
+                    responseMetadata: TranscriptionResponseMetadata(
+                        requestMode: .standardCompletedRecording,
+                        fellBackFromStreaming: false,
+                        httpStatusCode: 200,
+                        requestID: "req_retry_success",
+                        openAIProcessingMS: 120,
+                        contentType: "text/plain",
+                        responseHeadersReceivedMS: 400
+                    )
+                )
+            ),
+        ])
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            textInsertionService: textInsertionService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(backend.transcribeCallCount == 2)
+        #expect(textInsertionService.insertedTexts == ["recovered"])
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionRequestID == "req_retry_success")
+        #expect(model.diagnosticEvents.contains(where: { $0.summary.contains("Retrying transcription after a transient transport failure.") }))
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.terminalState == .inserted)
+        #expect(persistedRecords.first?.transcript.characterCount == 9)
+    }
+
+    @Test("Invalid API key failure does not retry transcription")
+    @MainActor
+    func invalidAPIKeyFailureDoesNotRetryTranscription() async {
+        let hotkeyManager = StubHotkeyManager()
+        let backend = SequencedTranscriptionBackend(results: [
+            .failure(.invalidAPIKey),
+        ])
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(backend.transcribeCallCount == 1)
+        #expect(model.apiKeyState == .invalid("The stored OpenAI API key was rejected."))
+    }
+
+    @Test("Offline transcription failure does not retry transcription")
+    @MainActor
+    func offlineTranscriptionFailureDoesNotRetry() async {
+        let hotkeyManager = StubHotkeyManager()
+        let backend = SequencedTranscriptionBackend(results: [
+            .failure(
+                .networkUnavailable(
+                    TranscriptionFailureContext(
+                        requestMode: .standardCompletedRecording,
+                        fellBackFromStreaming: false,
+                        httpStatusCode: nil,
+                        requestID: nil,
+                        openAIProcessingMS: nil,
+                        contentType: nil,
+                        responseHeadersReceivedMS: nil,
+                        transportFailureStage: .awaitingResponseHeaders,
+                        networkErrorDomain: NSURLErrorDomain,
+                        networkErrorCode: URLError.Code.notConnectedToInternet.rawValue,
+                        networkErrorCodeName: String(describing: URLError.Code.notConnectedToInternet)
+                    )
+                )
+            ),
+        ])
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(backend.transcribeCallCount == 1)
+    }
+
+    @Test("DNS transcription failure does not retry transcription")
+    @MainActor
+    func dnsTranscriptionFailureDoesNotRetry() async {
+        let hotkeyManager = StubHotkeyManager()
+        let backend = SequencedTranscriptionBackend(results: [
+            .failure(
+                .networkUnavailable(
+                    TranscriptionFailureContext(
+                        requestMode: .standardCompletedRecording,
+                        fellBackFromStreaming: false,
+                        httpStatusCode: nil,
+                        requestID: nil,
+                        openAIProcessingMS: nil,
+                        contentType: nil,
+                        responseHeadersReceivedMS: nil,
+                        transportFailureStage: .awaitingResponseHeaders,
+                        networkErrorDomain: NSURLErrorDomain,
+                        networkErrorCode: URLError.Code.dnsLookupFailed.rawValue,
+                        networkErrorCodeName: String(describing: URLError.Code.dnsLookupFailed)
+                    )
+                )
+            ),
+        ])
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(backend.transcribeCallCount == 1)
     }
 
     @Test("Hotkey presses are ignored while transcription is still in progress")
@@ -889,7 +1223,7 @@ struct HeadCanonSecurityTests {
 
         #expect(model.workflowStatus == .transcribing)
         #expect(audioCaptureService.startCallCount == 1)
-        #expect(model.lastDiagnosticEvent?.summary == "Ignored hotkey press because transcription is still in progress.")
+        #expect(model.lastDiagnosticEvent?.summary == "Ignored hotkey press because dictation processing is still in progress.")
 
         transcriptionBackend.finishTranscription()
         await waitForWorkflowCompletion(model)
@@ -986,6 +1320,7 @@ struct TextInsertionRoutingTests {
                 applicationName: "Codex",
                 bundleIdentifier: "com.openai.codex",
                 processIdentifier: 101,
+                capabilityProfile: .opaquePasteCapable,
                 role: "AXWebArea",
                 subrole: nil,
                 roleDescription: "web content",
@@ -1008,6 +1343,41 @@ struct TextInsertionRoutingTests {
 
         #expect(report.chosenStrategy == .customEditorPaste)
         #expect(report.predictedFailureClass == nil)
+    }
+
+    @Test("Planner keeps known opaque writable editors on paste-oriented transport")
+    func plannerKeepsKnownOpaqueWritableEditorsOffDirectAXReplacement() {
+        let report = InsertionStrategyPlanner.plan(
+            capabilities: TargetCapabilities(
+                applicationName: "Codex",
+                bundleIdentifier: "com.openai.codex",
+                processIdentifier: 151,
+                capabilityProfile: .opaquePasteCapable,
+                role: "AXTextArea",
+                subrole: nil,
+                roleDescription: "text area",
+                title: "Composer",
+                identifier: "prompt-editor",
+                placeholderValue: nil,
+                placeholderLikelyActive: false,
+                domIdentifier: "prompt",
+                valueReadable: true,
+                valueSettable: true,
+                selectedTextRangeReadable: true,
+                selectedTextReadable: false,
+                editable: true,
+                secure: false,
+                pasteCompatible: true,
+                directInsertCompatible: true
+            ),
+            allowPasteFallback: true
+        )
+
+        #expect(report.chosenStrategy == .customEditorPaste)
+        #expect(report.rejectedStrategies.contains { rejection in
+            rejection.strategy == .axValueReplacement
+                && rejection.reason.contains("opaque editors")
+        })
     }
 
     @Test("Planner keeps AX value replacement when placeholder-backed AX text can be sanitized")
@@ -1048,6 +1418,7 @@ struct TextInsertionRoutingTests {
                 applicationName: "Codex",
                 bundleIdentifier: "com.openai.codex",
                 processIdentifier: 112,
+                capabilityProfile: .opaquePasteCapable,
                 role: "AXTextArea",
                 subrole: nil,
                 roleDescription: "text area",
@@ -1112,6 +1483,7 @@ struct TextInsertionRoutingTests {
                 applicationName: "Codex",
                 bundleIdentifier: "com.openai.codex",
                 processIdentifier: 103,
+                capabilityProfile: .opaquePasteCapable,
                 role: nil,
                 subrole: nil,
                 roleDescription: nil,
@@ -1124,7 +1496,7 @@ struct TextInsertionRoutingTests {
                 valueSettable: false,
                 selectedTextRangeReadable: false,
                 selectedTextReadable: false,
-                editable: true,
+                editable: false,
                 secure: false,
                 pasteCompatible: true,
                 directInsertCompatible: false,
@@ -1296,36 +1668,131 @@ struct PlaceholderCleanupPlannerTests {
     @Test("App clipboard paste uses focused cleanup when same-process focus is available")
     func appClipboardPasteUsesFocusedCleanupWhenFocusMatches() {
         #expect(
-            PlaceholderCleanupPlanner.shouldAttemptFocusedCleanup(
+            PlaceholderCleanupPlanner.plan(
                 strategy: .appClipboardPaste,
                 plannedContextKind: .appOnly,
                 currentFocusProcessMatches: true,
                 currentFocusAvailable: true
             )
+                == .useFocusedTarget
         )
     }
 
-    @Test("App clipboard paste skips focused cleanup when process does not match")
-    func appClipboardPasteSkipsFocusedCleanupWhenFocusDoesNotMatch() {
+    @Test("App clipboard paste blocks blind paste when process does not match")
+    func appClipboardPasteBlocksBlindPasteWhenFocusDoesNotMatch() {
         #expect(
-            !PlaceholderCleanupPlanner.shouldAttemptFocusedCleanup(
+            PlaceholderCleanupPlanner.plan(
                 strategy: .appClipboardPaste,
                 plannedContextKind: .appOnly,
                 currentFocusProcessMatches: false,
                 currentFocusAvailable: true
             )
+                == .blockUnsafeBlindPaste
         )
     }
 
     @Test("AX-focused paste keeps focused cleanup enabled")
     func axFocusedPasteKeepsFocusedCleanupEnabled() {
         #expect(
-            PlaceholderCleanupPlanner.shouldAttemptFocusedCleanup(
+            PlaceholderCleanupPlanner.plan(
                 strategy: .customEditorPaste,
                 plannedContextKind: .axFocusedElement,
                 currentFocusProcessMatches: true,
                 currentFocusAvailable: true
             )
+                == .useFocusedTarget
+        )
+    }
+
+    @Test("App clipboard paste skips focused cleanup when no focused AX target is available")
+    func appClipboardPasteSkipsFocusedCleanupWhenFocusIsUnavailable() {
+        #expect(
+            PlaceholderCleanupPlanner.plan(
+                strategy: .appClipboardPaste,
+                plannedContextKind: .appOnly,
+                currentFocusProcessMatches: false,
+                currentFocusAvailable: false
+            )
+                == .skipCleanup
+        )
+    }
+}
+
+@Suite("Focus Target Equivalence")
+struct FocusTargetEquivalenceTests {
+    @Test("Matching DOM identifiers preserve target equivalence")
+    func matchingDOMIdentifierPreservesEquivalence() {
+        #expect(
+            FocusTargetEquivalenceDecider.appearEquivalent(
+                lhs: focusMetadata(domIdentifier: "prompt-editor"),
+                rhs: focusMetadata(domIdentifier: "prompt-editor"),
+                allowsWeakTextTargetFallback: false
+            )
+        )
+    }
+
+    @Test("Conflicting stable identifiers block weak target equivalence")
+    func conflictingIdentifiersBlockWeakEquivalence() {
+        #expect(
+            !FocusTargetEquivalenceDecider.appearEquivalent(
+                lhs: focusMetadata(identifier: "composer-a"),
+                rhs: focusMetadata(identifier: "composer-b"),
+                allowsWeakTextTargetFallback: true
+            )
+        )
+    }
+
+    @Test("Opaque text targets can survive AX identity churn without stable identifiers")
+    func weakTextTargetFallbackSupportsOpaqueEditors() {
+        #expect(
+            FocusTargetEquivalenceDecider.appearEquivalent(
+                lhs: focusMetadata(),
+                rhs: focusMetadata(),
+                allowsWeakTextTargetFallback: true
+            )
+        )
+    }
+
+    @Test("Weak text target fallback stays disabled for ordinary targets")
+    func weakTextTargetFallbackCanBeDisabled() {
+        #expect(
+            !FocusTargetEquivalenceDecider.appearEquivalent(
+                lhs: focusMetadata(),
+                rhs: focusMetadata(),
+                allowsWeakTextTargetFallback: false
+            )
+        )
+    }
+
+    @Test("Weak target fallback does not equate non-text controls")
+    func weakFallbackRejectsNonTextControls() {
+        #expect(
+            !FocusTargetEquivalenceDecider.appearEquivalent(
+                lhs: focusMetadata(role: kAXButtonRole as String, roleDescription: "button"),
+                rhs: focusMetadata(role: kAXButtonRole as String, roleDescription: "button"),
+                allowsWeakTextTargetFallback: true
+            )
+        )
+    }
+
+    private func focusMetadata(
+        role: String? = kAXTextAreaRole as String,
+        subrole: String? = nil,
+        roleDescription: String? = "text area",
+        title: String? = "Composer",
+        identifier: String? = nil,
+        placeholderValue: String? = nil,
+        domIdentifier: String? = nil
+    ) -> SecureTextFieldMetadata {
+        SecureTextFieldMetadata(
+            role: role,
+            subrole: subrole,
+            roleDescription: roleDescription,
+            title: title,
+            description: nil,
+            identifier: identifier,
+            placeholderValue: placeholderValue,
+            domIdentifier: domIdentifier
         )
     }
 }
@@ -1377,6 +1844,102 @@ struct PlaceholderCleanupDecisionTests {
     }
 }
 
+@Suite("Paste Verification Decision")
+struct PasteVerificationDecisionTests {
+    @Test("Verification passes when the field changes and contains the dictated text")
+    func verifiesChangedFieldContainingInsertedText() {
+        let decision = PasteVerificationDecider.decide(
+            beforeValue: "Draft ",
+            beforeSelectedRange: CFRange(location: 6, length: 0),
+            afterValue: "Draft hello world",
+            insertedText: "hello world",
+            mode: .exactReplacementPreferred
+        )
+
+        #expect(decision == .verified)
+    }
+
+    @Test("Verification fails when the field does not change")
+    func rejectsUnchangedFieldAfterPaste() {
+        let decision = PasteVerificationDecider.decide(
+            beforeValue: "Draft",
+            beforeSelectedRange: CFRange(location: 5, length: 0),
+            afterValue: "Draft",
+            insertedText: "hello world",
+            mode: .exactReplacementPreferred
+        )
+
+        guard case .failed(let message) = decision else {
+            Issue.record("Expected paste verification to fail for unchanged field state.")
+            return
+        }
+
+        #expect(message.contains("did not change"))
+    }
+
+    @Test("Verification fails when the dictated text never appears")
+    func rejectsFieldMissingInsertedText() {
+        let decision = PasteVerificationDecider.decide(
+            beforeValue: "Draft ",
+            beforeSelectedRange: CFRange(location: 6, length: 0),
+            afterValue: "Draft other text",
+            insertedText: "hello world",
+            mode: .exactReplacementPreferred
+        )
+
+        guard case .failed(let message) = decision else {
+            Issue.record("Expected paste verification to fail when dictated text is absent.")
+            return
+        }
+
+        #expect(message.contains("did not match"))
+    }
+
+    @Test("Verification stays non-blocking when readback is unavailable")
+    func allowsUnavailableReadback() {
+        let decision = PasteVerificationDecider.decide(
+            beforeValue: nil,
+            beforeSelectedRange: nil,
+            afterValue: nil,
+            insertedText: "hello world",
+            mode: .exactReplacementPreferred
+        )
+
+        #expect(decision == .unavailable)
+    }
+
+    @Test("Verification fails when the resulting field differs from the expected replacement")
+    func rejectsUnexpectedPostPasteFieldValue() {
+        let decision = PasteVerificationDecider.decide(
+            beforeValue: "Draft ",
+            beforeSelectedRange: CFRange(location: 6, length: 0),
+            afterValue: "Draft stale clipboard text",
+            insertedText: "hello world",
+            mode: .exactReplacementPreferred
+        )
+
+        guard case .failed(let message) = decision else {
+            Issue.record("Expected paste verification to fail when the resulting field differs from the expected replacement.")
+            return
+        }
+
+        #expect(message.contains("did not match"))
+    }
+
+    @Test("Opaque editors allow non-exact AX values when the transcript is present and the field changed")
+    func opaqueEditorsUseTranscriptPresenceVerification() {
+        let decision = PasteVerificationDecider.decide(
+            beforeValue: "Draft ",
+            beforeSelectedRange: CFRange(location: 6, length: 0),
+            afterValue: "Draft stale prefix hello world",
+            insertedText: "hello world",
+            mode: .transcriptPresenceOnly
+        )
+
+        #expect(decision == .verified)
+    }
+}
+
 @MainActor
 private func makeReadyModel(
     preferences: AppPreferences = testPreferences(),
@@ -1385,6 +1948,7 @@ private func makeReadyModel(
     textInsertionService: any TextInsertionServicing = StubTextInsertionService(),
     diagnosticsStore: any DiagnosticsStoring = NoOpDiagnosticsStore(),
     hotkeyManager: StubHotkeyManager = StubHotkeyManager(),
+    clipboardWriter: any ClipboardWriting = RecordingClipboardWriter(),
     transcriptionTimeout: Duration = .seconds(30)
 ) -> HeadCanonModel {
     if !preferences.hasCachedValidation(for: "test-key") {
@@ -1405,6 +1969,7 @@ private func makeReadyModel(
         apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
         diagnosticsStore: diagnosticsStore,
         hotkeyManager: hotkeyManager,
+        clipboardWriter: clipboardWriter,
         transcriptionTimeout: transcriptionTimeout
     )
 }
@@ -1508,7 +2073,7 @@ private struct OfflineValidationTranscriptionBackend: TranscriptionBackend {
     let id = "offline-validation"
 
     func validateConfiguration(apiKey: String) async throws {
-        throw TranscriptionBackendError.networkUnavailable
+        throw TranscriptionBackendError.networkUnavailable()
     }
 
     func transcribe(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
@@ -1517,7 +2082,12 @@ private struct OfflineValidationTranscriptionBackend: TranscriptionBackend {
 }
 
 private struct StubTextInsertionService: TextInsertionServicing {
+    var captureError: Error?
+
     func captureFocusedTarget() throws -> any TextInsertionTargetHandle {
+        if let captureError {
+            throw captureError
+        }
         return StubTextInsertionTargetHandle(id: "stub-target")
     }
 
@@ -1555,6 +2125,18 @@ private struct StubTextInsertionService: TextInsertionServicing {
         )
     }
 
+    func planExecutionInsertion(
+        relativeTo target: (any TextInsertionTargetHandle)?,
+        allowPasteFallback: Bool,
+        observationLabel: String
+    ) throws -> InsertionAttemptReport {
+        try planInsertion(
+            target: target,
+            allowPasteFallback: allowPasteFallback,
+            observationLabel: observationLabel
+        )
+    }
+
     func insert(
         _ text: String,
         target: (any TextInsertionTargetHandle)?,
@@ -1575,11 +2157,17 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
     private(set) var insertedTargets: [String] = []
     private(set) var lastAllowPasteFallback = true
     private(set) var lastInsertionPlan: InsertionAttemptReport?
+    private(set) var executionPlanningCallCount = 0
     var focusedTarget: StubTextInsertionTargetHandle = StubTextInsertionTargetHandle(id: "stub-target")
     var supportsDirectInsert = false
+    var captureError: Error?
+    var insertError: Error?
     private var captureCallCount = 0
 
     func captureFocusedTarget() throws -> any TextInsertionTargetHandle {
+        if let captureError {
+            throw captureError
+        }
         captureCallCount += 1
         return focusedTarget
     }
@@ -1620,6 +2208,19 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
         return report
     }
 
+    func planExecutionInsertion(
+        relativeTo target: (any TextInsertionTargetHandle)?,
+        allowPasteFallback: Bool,
+        observationLabel: String
+    ) throws -> InsertionAttemptReport {
+        executionPlanningCallCount += 1
+        return try planInsertion(
+            target: target,
+            allowPasteFallback: allowPasteFallback,
+            observationLabel: observationLabel
+        )
+    }
+
     func insert(
         _ text: String,
         target: (any TextInsertionTargetHandle)?,
@@ -1641,6 +2242,10 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
 
         if !supportsDirectInsert && !allowPasteFallback {
             throw TextInsertionError.pasteFallbackDisabled
+        }
+
+        if let insertError {
+            throw insertError
         }
 
         insertedTexts.append(text)
@@ -1667,6 +2272,17 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
     }
 }
 
+private final class RecordingClipboardWriter: ClipboardWriting {
+    private(set) var writes: [String] = []
+    var writeSucceeds = true
+
+    @discardableResult
+    func write(_ text: String) -> Bool {
+        writes.append(text)
+        return writeSucceeds
+    }
+}
+
 private final class StubTextInsertionTargetHandle: TextInsertionTargetHandle {
     let id: String
 
@@ -1680,6 +2296,7 @@ private final class DelayedTranscriptionBackend: TranscriptionBackend {
     let id = "delayed"
     private let transcript: String
     private var continuation: CheckedContinuation<TranscriptionResult, Error>?
+    private(set) var cancellationCount = 0
 
     init(transcript: String) {
         self.transcript = transcript
@@ -1688,8 +2305,14 @@ private final class DelayedTranscriptionBackend: TranscriptionBackend {
     func validateConfiguration(apiKey: String) async throws {}
 
     func transcribe(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+            }
+        } onCancel: {
+            Task { @MainActor in
+                self.handleCancellation()
+            }
         }
     }
 
@@ -1702,9 +2325,62 @@ private final class DelayedTranscriptionBackend: TranscriptionBackend {
         }
     }
 
+    func waitUntilCancelled() async {
+        for _ in 0..<20 {
+            if cancellationCount > 0 {
+                return
+            }
+            await Task.yield()
+        }
+    }
+
     func finishTranscription() {
         continuation?.resume(returning: TranscriptionResult(text: transcript, backendID: id, duration: nil, responseMetadata: nil))
         continuation = nil
+    }
+
+    private func handleCancellation() {
+        cancellationCount += 1
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
+    }
+}
+
+private struct FailingTranscriptionBackend: TranscriptionBackend {
+    let id = "failing"
+    let error: TranscriptionBackendError
+
+    func validateConfiguration(apiKey: String) async throws {}
+
+    func transcribe(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
+        throw error
+    }
+}
+
+@MainActor
+private final class SequencedTranscriptionBackend: TranscriptionBackend {
+    let id = "sequenced"
+    private(set) var transcribeCallCount = 0
+    private var results: [Result<TranscriptionResult, TranscriptionBackendError>]
+
+    init(results: [Result<TranscriptionResult, TranscriptionBackendError>]) {
+        self.results = results
+    }
+
+    func validateConfiguration(apiKey: String) async throws {}
+
+    func transcribe(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
+        transcribeCallCount += 1
+        guard !results.isEmpty else {
+            throw TranscriptionBackendError.networkUnavailable()
+        }
+
+        return switch results.removeFirst() {
+        case .success(let result):
+            result
+        case .failure(let error):
+            throw error
+        }
     }
 }
 
@@ -1781,7 +2457,7 @@ actor RecordingDiagnosticsStore: DiagnosticsStoring {
     }
 
     func waitForRecordCount(_ expectedCount: Int) async -> [DictationAttemptRecord] {
-        for _ in 0..<50 {
+        for _ in 0..<200 {
             if records.count >= expectedCount {
                 return records
             }
@@ -1810,14 +2486,14 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
             hotkeyPressedAt: Date(timeIntervalSince1970: 1_715_000_000),
             recordingStartedAt: Date(timeIntervalSince1970: 1_715_000_001),
             hotkeyReleasedAt: Date(timeIntervalSince1970: 1_715_000_002),
-            processingStateShownAt: Date(timeIntervalSince1970: 1_715_000_002),
+            finalizingStateShownAt: Date(timeIntervalSince1970: 1_715_000_002),
             recordingFinalizedAt: Date(timeIntervalSince1970: 1_715_000_003),
             transcriptionRequestStartedAt: Date(timeIntervalSince1970: 1_715_000_003),
             transcriptionResponseCompletedAt: Date(timeIntervalSince1970: 1_715_000_004),
             insertionCompletedAt: Date(timeIntervalSince1970: 1_715_000_004),
             stopTrigger: HotkeyReleaseSource.carbonKeyUp.rawValue,
             pressToRecordingStartDurationMS: 60,
-            releaseToProcessingStateDurationMS: 0,
+            releaseToFinalizingStateDurationMS: 0,
             releaseToFinalizedDurationMS: 40,
             finalizedToRequestStartDurationMS: 0,
             requestToResponseDurationMS: 980,
@@ -1839,7 +2515,12 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
             httpStatusCode: 200,
             requestID: "req_test",
             openAIProcessingMS: 850,
-            responseContentType: "text/event-stream"
+            responseContentType: "text/event-stream",
+            responseHeadersReceivedMS: 240,
+            transportFailureStage: nil,
+            networkErrorDomain: nil,
+            networkErrorCode: nil,
+            networkErrorCodeName: nil
         ),
         releaseTimeInsertion: DictationAttemptInsertionRecord(
             observationLabel: "Release-Time Context",
@@ -1889,8 +2570,118 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
             pasteCompatible: true,
             directInsertCompatible: true
         ),
-        failure: nil
+        failure: nil,
+        clipboardRecovery: nil
     )
+}
+
+private struct CapturedTranscriptionRequest: Equatable, Sendable {
+    let acceptHeader: String?
+    let bodyString: String
+}
+
+private struct StandardTranscriptionURLProtocolState: Sendable {
+    var capturedRequests: [CapturedTranscriptionRequest] = []
+}
+
+private final class StandardTranscriptionURLProtocolStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = StandardTranscriptionURLProtocolState()
+
+    func reset() {
+        lock.withLock {
+            state = StandardTranscriptionURLProtocolState()
+        }
+    }
+
+    func capturedRequests() -> [CapturedTranscriptionRequest] {
+        lock.withLock {
+            state.capturedRequests
+        }
+    }
+
+    func append(_ request: CapturedTranscriptionRequest) {
+        lock.withLock {
+            state.capturedRequests.append(request)
+        }
+    }
+}
+
+private final class StandardTranscriptionURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let store = StandardTranscriptionURLProtocolStore()
+
+    static func reset() {
+        store.reset()
+    }
+
+    static func capturedRequests() -> [CapturedTranscriptionRequest] {
+        store.capturedRequests()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.absoluteString == "https://api.openai.com/v1/audio/transcriptions"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        let bodyString = String(decoding: Self.bodyData(from: request), as: UTF8.self)
+        let capturedRequest = CapturedTranscriptionRequest(
+            acceptHeader: request.value(forHTTPHeaderField: "Accept"),
+            bodyString: bodyString
+        )
+        Self.store.append(capturedRequest)
+
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: [
+                "content-type": "text/plain",
+                "x-request-id": "req_standard_default",
+                "openai-processing-ms": "123",
+            ]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data("hello from standard mode".utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func bodyData(from request: URLRequest) -> Data {
+        if let httpBody = request.httpBody {
+            return httpBody
+        }
+
+        guard let httpBodyStream = request.httpBodyStream else {
+            return Data()
+        }
+
+        httpBodyStream.open()
+        defer {
+            httpBodyStream.close()
+        }
+
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 4_096)
+        while httpBodyStream.hasBytesAvailable {
+            let readCount = httpBodyStream.read(&buffer, maxLength: buffer.count)
+            if readCount > 0 {
+                data.append(buffer, count: readCount)
+            } else {
+                break
+            }
+        }
+        return data
+    }
 }
 
 private final class InMemoryAPIKeyStore: APIKeyStoring {
