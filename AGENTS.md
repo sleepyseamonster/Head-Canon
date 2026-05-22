@@ -115,6 +115,12 @@ Transcription should expose one app-facing interface with multiple backends behi
 - Keep files readable; avoid premature frameworking.
 - Add tests where practical, but do not block core platform integration work on test purity.
 
+## Branch Discipline
+- Work from `main` by default.
+- Do not create or continue feature-branch implementation work unless the user explicitly asks for branch-based workflow.
+- Before starting new work, verify the checkout is `main` and that `main` is aligned with `origin/main` or intentionally ahead with the active local work.
+- If work is discovered off `main`, merge it back promptly and return all agents to `main` before continuing.
+
 ## Checkpoint Discipline
 At each meaningful implementation checkpoint, do all of the following before moving on:
 
