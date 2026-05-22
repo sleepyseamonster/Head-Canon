@@ -5,6 +5,8 @@
 
 ## Repository Facts
 - Repository root: `/Users/worldbuilder/Desktop/Head Canon`
+- GitHub repository: `sleepyseamonster/Head-Canon`
+- Origin remote: `https://github.com/sleepyseamonster/Head-Canon.git`
 - Project category: local-first macOS dictation app
 - Preferred implementation direction from repo instructions: Swift, SwiftUI, macOS 14+, Apple Silicon first
 - Package manifest present: `Package.swift`
