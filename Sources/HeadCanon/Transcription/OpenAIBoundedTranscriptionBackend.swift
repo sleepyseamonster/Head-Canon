@@ -4,6 +4,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
     private static let boundedDictationLanguageCode = "en"
     private let modelProvider: () -> OpenAITranscriptionModel
     private let session: URLSession
+    private let sessionConfiguration: URLSessionConfiguration
 
     init(
         modelProvider: @escaping () -> OpenAITranscriptionModel = { .gpt4oMiniTranscribe },
@@ -12,10 +13,14 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         self.modelProvider = modelProvider
         if let session {
             self.session = session
+            let configuration = (session.configuration.copy() as? URLSessionConfiguration)
+                ?? session.configuration
+            Self.configureTranscriptionSession(configuration)
+            self.sessionConfiguration = configuration
         } else {
             let configuration = URLSessionConfiguration.default
-            configuration.timeoutIntervalForRequest = 30
-            configuration.timeoutIntervalForResource = 45
+            Self.configureTranscriptionSession(configuration)
+            self.sessionConfiguration = configuration
             self.session = URLSession(configuration: configuration)
         }
     }
@@ -89,11 +94,14 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
 
         let clock = ContinuousClock()
         let requestStartedAt = clock.now
-        let bytes: URLSession.AsyncBytes
+        let data: Data
         let response: URLResponse
 
         do {
-            (bytes, response) = try await session.bytes(for: request)
+            (data, response, _) = try await performCancelableDataRequest(
+                for: request,
+                requestStartedAt: requestStartedAt
+            )
         } catch {
             throw Self.networkFailure(
                 from: error,
@@ -114,7 +122,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
 
         let text: String
         do {
-            text = try await Self.parseStreamingTranscriptionResponse(from: bytes)
+            text = try Self.parseStreamingTranscriptionResponse(from: data)
         } catch {
             throw Self.networkFailure(
                 from: error,
@@ -172,12 +180,20 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
 
         let clock = ContinuousClock()
         let requestStartedAt = clock.now
-        let bytes: URLSession.AsyncBytes
+        let data: Data
         let response: URLResponse
 
         do {
-            (bytes, response) = try await session.bytes(for: request)
+            let requestSession = URLSession(configuration: sessionConfiguration)
+            defer {
+                requestSession.invalidateAndCancel()
+            }
+            (data, response) = try await requestSession.data(for: request)
         } catch {
+            if Self.isCancellation(error) {
+                throw CancellationError()
+            }
+
             throw Self.networkFailure(
                 from: error,
                 requestMode: requestMode,
@@ -187,27 +203,13 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             )
         }
 
-        let responseHeadersReceivedMS = Self.elapsedMilliseconds(since: requestStartedAt, clock: clock)
+        let resolvedResponseHeadersReceivedMS = Self.elapsedMilliseconds(since: requestStartedAt, clock: clock)
         let metadata = try Self.responseMetadata(
             from: response,
             requestMode: requestMode,
             fellBackFromStreaming: fellBackFromStreaming,
-            responseHeadersReceivedMS: responseHeadersReceivedMS
+            responseHeadersReceivedMS: resolvedResponseHeadersReceivedMS
         )
-
-        let data: Data
-        do {
-            data = try await Self.readAllBytes(from: bytes)
-        } catch {
-            throw Self.networkFailure(
-                from: error,
-                requestMode: requestMode,
-                fellBackFromStreaming: fellBackFromStreaming,
-                responseMetadata: metadata,
-                responseHeadersReceivedMS: responseHeadersReceivedMS,
-                transportFailureStage: .readingResponseBody
-            )
-        }
 
         let text = Self.parsePlainTextResponse(data)
         guard !text.isEmpty else {
@@ -216,13 +218,37 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
                     requestMode: requestMode,
                     fellBackFromStreaming: fellBackFromStreaming,
                     responseMetadata: metadata,
-                    responseHeadersReceivedMS: responseHeadersReceivedMS,
+                    responseHeadersReceivedMS: resolvedResponseHeadersReceivedMS,
                     transportFailureStage: .readingResponseBody,
                     networkError: nil
                 )
             )
         }
         return ParsedTranscriptionResponse(text: text, metadata: metadata)
+    }
+
+    private func performCancelableDataRequest(
+        for request: URLRequest,
+        requestStartedAt: ContinuousClock.Instant
+    ) async throws -> (Data, URLResponse, Int?) {
+        let delegate = CancelableDataTaskDelegate(requestStartedAt: requestStartedAt)
+        let requestSession = URLSession(
+            configuration: sessionConfiguration,
+            delegate: delegate,
+            delegateQueue: nil
+        )
+        defer {
+            requestSession.invalidateAndCancel()
+        }
+        return try await delegate.run(in: requestSession, request: request)
+    }
+
+    private static func configureTranscriptionSession(_ configuration: URLSessionConfiguration) {
+        configuration.timeoutIntervalForRequest = 30
+        configuration.timeoutIntervalForResource = 45
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        configuration.httpMaximumConnectionsPerHost = 1
     }
 
     nonisolated private static func makeTranscriptionRequest(
@@ -332,17 +358,6 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         )
     }
 
-    nonisolated private static func readAllBytes(from bytes: URLSession.AsyncBytes) async throws -> Data {
-        var data = Data()
-        var iterator = bytes.makeAsyncIterator()
-
-        while let byte = try await iterator.next() {
-            data.append(byte)
-        }
-
-        return data
-    }
-
     nonisolated private static func elapsedMilliseconds(
         since start: ContinuousClock.Instant,
         clock: ContinuousClock
@@ -372,6 +387,14 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
                 networkError: error
             )
         )
+    }
+
+    nonisolated private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        return (error as? URLError)?.code == .cancelled
     }
 
     nonisolated private static func failureContext(
@@ -408,15 +431,18 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    nonisolated private static func parseStreamingTranscriptionResponse(
-        from bytes: URLSession.AsyncBytes
-    ) async throws -> String {
+    nonisolated private static func parseStreamingTranscriptionResponse(from data: Data) throws -> String {
         var eventLines: [String] = []
         var accumulatedDeltaText = ""
         var sawStructuredStreamingLine = false
 
-        for try await rawLine in bytes.lines {
-            let line = rawLine.trimmingCharacters(in: .newlines)
+        guard let payload = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+
+        for rawLine in payload.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
+            let rawLineString = String(rawLine)
+            let line = rawLineString.trimmingCharacters(in: .newlines)
 
             if line.isEmpty {
                 if let completedText = parseStreamEvent(
@@ -533,6 +559,139 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         body.appendUTF8("--\(boundary)--\r\n")
 
         return body
+    }
+}
+
+private final class CancelableDataTaskDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private let clock = ContinuousClock()
+    private let requestStartedAt: ContinuousClock.Instant
+    private var task: URLSessionDataTask?
+    private var continuation: CheckedContinuation<(Data, URLResponse, Int?), Error>?
+    private var response: URLResponse?
+    private var responseHeadersReceivedMS: Int?
+    private var data = Data()
+    private var completed = false
+
+    init(requestStartedAt: ContinuousClock.Instant) {
+        self.requestStartedAt = requestStartedAt
+    }
+
+    func run(in session: URLSession, request: URLRequest) async throws -> (Data, URLResponse, Int?) {
+        let task = session.dataTask(with: request)
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.withLock {
+                    self.task = task
+                    self.continuation = continuation
+                }
+                task.resume()
+            }
+        } onCancel: {
+            cancel()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        lock.withLock {
+            self.response = response
+            if responseHeadersReceivedMS == nil {
+                responseHeadersReceivedMS = elapsedMillisecondsSinceStart()
+            }
+        }
+        completionHandler(.allow)
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        lock.withLock {
+            self.data.append(data)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        let resolution: Resolution? = lock.withLock {
+            guard !completed else {
+                return nil
+            }
+
+            completed = true
+            self.task = nil
+
+            let continuation = self.continuation
+            self.continuation = nil
+
+            if let error {
+                let nsError = error as NSError
+                if nsError.domain == NSURLErrorDomain, nsError.code == URLError.cancelled.rawValue {
+                    return continuation.map { Resolution(continuation: $0, result: .failure(CancellationError())) }
+                }
+                return continuation.map { Resolution(continuation: $0, result: .failure(error)) }
+            }
+
+            guard let response else {
+                return continuation.map {
+                    Resolution(continuation: $0, result: .failure(TranscriptionBackendError.invalidResponse()))
+                }
+            }
+
+            return continuation.map {
+                Resolution(
+                    continuation: $0,
+                    result: .success((data, response, responseHeadersReceivedMS))
+                )
+            }
+        }
+
+        resolution?.resume()
+    }
+
+    private func cancel() {
+        let cancellation: (URLSessionDataTask?, Resolution?) = lock.withLock {
+            guard !completed else {
+                return (nil, nil)
+            }
+
+            completed = true
+            let task = self.task
+            self.task = nil
+
+            let continuation = self.continuation
+            self.continuation = nil
+
+            return (
+                task,
+                continuation.map {
+                    Resolution(continuation: $0, result: .failure(CancellationError()))
+                }
+            )
+        }
+
+        let (task, resolution) = cancellation
+        task?.cancel()
+        resolution?.resume()
+    }
+
+    private func elapsedMillisecondsSinceStart() -> Int {
+        let duration = requestStartedAt.duration(to: clock.now)
+        let components = duration.components
+        let secondsMS = components.seconds * 1000
+        let attosecondsMS = components.attoseconds / 1_000_000_000_000_000
+        return Int(secondsMS + attosecondsMS)
+    }
+}
+
+private struct Resolution {
+    let continuation: CheckedContinuation<(Data, URLResponse, Int?), Error>
+    let result: Result<(Data, URLResponse, Int?), Error>
+
+    func resume() {
+        continuation.resume(with: result)
     }
 }
 

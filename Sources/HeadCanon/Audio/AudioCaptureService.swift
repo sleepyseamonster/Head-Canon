@@ -10,13 +10,19 @@ private struct CaptureSessionTeardownToken: @unchecked Sendable {
     let session: AVCaptureSession
 }
 
+enum AudioCaptureUnexpectedCompletion {
+    case finished(BoundedAudioInput)
+    case failed(String)
+}
+
 @MainActor
-protocol AudioCapturing {
+protocol AudioCapturing: AnyObject {
     func availableInputDevices() -> [MicrophoneDevice]
     func startRecording(preferredDeviceID: String?) throws
     func stopRecording() async throws -> BoundedAudioInput
     func cancelRecording()
     var isRecording: Bool { get }
+    var unexpectedRecordingCompletionHandler: ((AudioCaptureUnexpectedCompletion) -> Void)? { get set }
 }
 
 enum AudioCaptureError: LocalizedError {
@@ -70,6 +76,7 @@ final class AudioCaptureService: NSObject, AudioCapturing {
     private var pendingStopContinuation: CheckedContinuation<BoundedAudioInput, Error>?
     private var pendingDuration: TimeInterval?
     private var shouldDiscardRecording = false
+    var unexpectedRecordingCompletionHandler: ((AudioCaptureUnexpectedCompletion) -> Void)?
 
     override init() {
         super.init()
@@ -316,7 +323,7 @@ extension AudioCaptureService: AVCaptureFileOutputRecordingDelegate {
     @MainActor
     private func handleRecordingFinished(outputFileURL: URL, error: NSError?) {
         let continuation = pendingStopContinuation
-        let duration = pendingDuration
+        let duration = pendingDuration ?? startedAt.map { Date().timeIntervalSince($0) }
         let mimeType = activeMimeType
         let shouldDiscardRecording = shouldDiscardRecording
 
@@ -325,13 +332,25 @@ extension AudioCaptureService: AVCaptureFileOutputRecordingDelegate {
 
         cleanup(removeOutputFile: shouldDiscardRecording || !recordingFinishedSuccessfully)
 
+        guard let continuation else {
+            notifyUnexpectedCompletion(
+                outputFileURL: outputFileURL,
+                mimeType: mimeType,
+                duration: duration,
+                shouldDiscardRecording: shouldDiscardRecording,
+                recordingFinishedSuccessfully: recordingFinishedSuccessfully,
+                error: error
+            )
+            return
+        }
+
         if shouldDiscardRecording {
-            continuation?.resume(throwing: AudioCaptureError.noActiveRecording)
+            continuation.resume(throwing: AudioCaptureError.noActiveRecording)
             return
         }
 
         guard recordingFinishedSuccessfully else {
-            continuation?.resume(
+            continuation.resume(
                 throwing: AudioCaptureError.finalizationFailed(
                     error?.localizedDescription ?? "Head Canon could not finish writing the recorded audio file."
                 )
@@ -340,15 +359,52 @@ extension AudioCaptureService: AVCaptureFileOutputRecordingDelegate {
         }
 
         guard FileManager.default.fileExists(atPath: outputFileURL.path()) else {
-            continuation?.resume(throwing: AudioCaptureError.outputMissing)
+            continuation.resume(throwing: AudioCaptureError.outputMissing)
             return
         }
 
-        continuation?.resume(
+        continuation.resume(
             returning: BoundedAudioInput(
                 fileURL: outputFileURL,
                 mimeType: mimeType,
                 duration: duration
+            )
+        )
+    }
+
+    private func notifyUnexpectedCompletion(
+        outputFileURL: URL,
+        mimeType: String,
+        duration: TimeInterval?,
+        shouldDiscardRecording: Bool,
+        recordingFinishedSuccessfully: Bool,
+        error: NSError?
+    ) {
+        guard !shouldDiscardRecording else {
+            return
+        }
+
+        guard recordingFinishedSuccessfully else {
+            unexpectedRecordingCompletionHandler?(
+                .failed(
+                    error?.localizedDescription ?? "Head Canon's audio capture stopped before recording finalization completed."
+                )
+            )
+            return
+        }
+
+        guard FileManager.default.fileExists(atPath: outputFileURL.path()) else {
+            unexpectedRecordingCompletionHandler?(.failed(AudioCaptureError.outputMissing.localizedDescription))
+            return
+        }
+
+        unexpectedRecordingCompletionHandler?(
+            .finished(
+                BoundedAudioInput(
+                    fileURL: outputFileURL,
+                    mimeType: mimeType,
+                    duration: duration
+                )
             )
         )
     }

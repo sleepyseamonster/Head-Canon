@@ -250,6 +250,22 @@ struct InsertionStrategyRejection: Equatable, Identifiable {
     var id: String { "\(strategy.rawValue):\(reason)" }
 }
 
+enum InsertionVerificationOutcome: String, Equatable, Codable, Identifiable {
+    case verified
+    case unverified
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .verified:
+            "Verified"
+        case .unverified:
+            "Unverified"
+        }
+    }
+}
+
 struct InsertionAttemptReport: Equatable {
     let observedAt: Date
     let observationLabel: String
@@ -259,12 +275,40 @@ struct InsertionAttemptReport: Equatable {
     let appliedStrategy: InsertionStrategy?
     let predictedFailureClass: InsertionFailureClass?
     let strategyReason: String
+    let verificationOutcome: InsertionVerificationOutcome?
     let placeholderHandlingOutcome: PlaceholderHandlingOutcome?
     let rejectedStrategies: [InsertionStrategyRejection]
 
+    init(
+        observedAt: Date,
+        observationLabel: String,
+        capabilities: TargetCapabilities,
+        allowPasteFallback: Bool,
+        chosenStrategy: InsertionStrategy,
+        appliedStrategy: InsertionStrategy?,
+        predictedFailureClass: InsertionFailureClass?,
+        strategyReason: String,
+        verificationOutcome: InsertionVerificationOutcome? = nil,
+        placeholderHandlingOutcome: PlaceholderHandlingOutcome?,
+        rejectedStrategies: [InsertionStrategyRejection]
+    ) {
+        self.observedAt = observedAt
+        self.observationLabel = observationLabel
+        self.capabilities = capabilities
+        self.allowPasteFallback = allowPasteFallback
+        self.chosenStrategy = chosenStrategy
+        self.appliedStrategy = appliedStrategy
+        self.predictedFailureClass = predictedFailureClass
+        self.strategyReason = strategyReason
+        self.verificationOutcome = verificationOutcome
+        self.placeholderHandlingOutcome = placeholderHandlingOutcome
+        self.rejectedStrategies = rejectedStrategies
+    }
+
     func withExecution(
         appliedStrategy: InsertionStrategy,
-        placeholderHandlingOutcome: PlaceholderHandlingOutcome
+        placeholderHandlingOutcome: PlaceholderHandlingOutcome,
+        verificationOutcome: InsertionVerificationOutcome
     ) -> InsertionAttemptReport {
         InsertionAttemptReport(
             observedAt: observedAt,
@@ -275,6 +319,7 @@ struct InsertionAttemptReport: Equatable {
             appliedStrategy: appliedStrategy,
             predictedFailureClass: predictedFailureClass,
             strategyReason: strategyReason,
+            verificationOutcome: verificationOutcome,
             placeholderHandlingOutcome: placeholderHandlingOutcome,
             rejectedStrategies: rejectedStrategies
         )
@@ -1167,7 +1212,8 @@ struct TextInsertionService: TextInsertionServicing {
             if directInsertResult.didInsert {
                 return attempt.withExecution(
                     appliedStrategy: .axValueReplacement,
-                    placeholderHandlingOutcome: directInsertResult.placeholderHandlingOutcome
+                    placeholderHandlingOutcome: directInsertResult.placeholderHandlingOutcome,
+                    verificationOutcome: .verified
                 )
             }
 
@@ -1175,20 +1221,22 @@ struct TextInsertionService: TextInsertionServicing {
                 throw TextInsertionError.pasteFallbackDisabled
             }
 
-            let placeholderHandlingOutcome = try await paste(text: text, into: resolvedTarget, strategy: .pasteFallback)
+            let pasteResult = try await paste(text: text, into: resolvedTarget, strategy: .pasteFallback)
             return attempt.withExecution(
                 appliedStrategy: .pasteFallback,
-                placeholderHandlingOutcome: placeholderHandlingOutcome
+                placeholderHandlingOutcome: pasteResult.placeholderHandlingOutcome,
+                verificationOutcome: pasteResult.verificationOutcome
             )
         case .customEditorPaste, .pasteFallback, .appClipboardPaste:
             guard allowPasteFallback else {
                 throw TextInsertionError.pasteFallbackDisabled
             }
 
-            let placeholderHandlingOutcome = try await paste(text: text, into: resolvedTarget, strategy: attempt.chosenStrategy)
+            let pasteResult = try await paste(text: text, into: resolvedTarget, strategy: attempt.chosenStrategy)
             return attempt.withExecution(
                 appliedStrategy: attempt.chosenStrategy,
-                placeholderHandlingOutcome: placeholderHandlingOutcome
+                placeholderHandlingOutcome: pasteResult.placeholderHandlingOutcome,
+                verificationOutcome: pasteResult.verificationOutcome
             )
         }
     }
@@ -1376,6 +1424,11 @@ struct TextInsertionService: TextInsertionServicing {
         let placeholderHandlingOutcome: PlaceholderHandlingOutcome
     }
 
+    private struct PasteTransportResult {
+        let placeholderHandlingOutcome: PlaceholderHandlingOutcome
+        let verificationOutcome: InsertionVerificationOutcome
+    }
+
     private func directInsert(text: String, into element: AXUIElement) throws -> DirectInsertResult {
         guard
             let currentValue = try copyStringAttribute(kAXValueAttribute, from: element),
@@ -1498,7 +1551,7 @@ struct TextInsertionService: TextInsertionServicing {
         text: String,
         into target: ResolvedInsertionContext,
         strategy: InsertionStrategy
-    ) async throws -> PlaceholderHandlingOutcome {
+    ) async throws -> PasteTransportResult {
         let pasteboard = NSPasteboard.general
         let snapshot = PasteboardSnapshot.capture(from: pasteboard)
 
@@ -1538,15 +1591,21 @@ struct TextInsertionService: TextInsertionServicing {
         }
 
         try? await Task.sleep(for: pasteboardRestoreDelay(for: strategy))
-        try verifyPasteDelivery(of: text, into: target, baseline: verificationBaseline)
+        let verificationOutcome = try verifyPasteDelivery(of: text, into: target, baseline: verificationBaseline)
 
         // Avoid clobbering newer clipboard contents if the user changed them during fallback.
         guard pasteboard.changeCount == injectedChangeCount else {
-            return placeholderHandlingOutcome
+            return PasteTransportResult(
+                placeholderHandlingOutcome: placeholderHandlingOutcome,
+                verificationOutcome: verificationOutcome
+            )
         }
 
         snapshot.restore(to: pasteboard)
-        return placeholderHandlingOutcome
+        return PasteTransportResult(
+            placeholderHandlingOutcome: placeholderHandlingOutcome,
+            verificationOutcome: verificationOutcome
+        )
     }
 
     private func pasteboardRestoreDelay(for strategy: InsertionStrategy) -> Duration {
@@ -1591,9 +1650,9 @@ struct TextInsertionService: TextInsertionServicing {
         of text: String,
         into target: ResolvedInsertionContext,
         baseline: PasteVerificationSnapshot?
-    ) throws {
+    ) throws -> InsertionVerificationOutcome {
         guard let baseline else {
-            return
+            return .unverified
         }
 
         let currentContext = try currentInsertionContext()
@@ -1602,7 +1661,7 @@ struct TextInsertionService: TextInsertionServicing {
         }
 
         guard let currentFocusTarget = currentContext.focusTarget else {
-            return
+            return .unverified
         }
 
         guard focusTargetsAppearEquivalent(currentFocusTarget, baseline.target) else {
@@ -1620,8 +1679,10 @@ struct TextInsertionService: TextInsertionServicing {
             insertedText: text,
             mode: verificationMode
         ) {
-        case .verified, .unavailable:
-            return
+        case .verified:
+            return .verified
+        case .unavailable:
+            return .unverified
         case .failed(let message):
             throw TextInsertionError.pasteDeliveryUnconfirmed(message)
         }

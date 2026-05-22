@@ -119,8 +119,25 @@ struct MenuBarContentView: View {
 
             Divider()
 
+            Button("Finalize Recording Now") {
+                model.finalizeCurrentRecordingNow()
+            }
+            .disabled(!model.canFinalizeCurrentRecording)
+
+            Button("Cancel Current Dictation") {
+                model.cancelCurrentDictation()
+            }
+            .disabled(!model.canCancelCurrentDictation)
+
+            Divider()
+
             Button("Paste Last Transcript") {
                 model.pasteLastTranscript()
+            }
+            .disabled(model.lastTranscript?.isEmpty ?? true)
+
+            Button("Copy Last Transcript") {
+                model.copyLastTranscript()
             }
             .disabled(model.lastTranscript?.isEmpty ?? true)
 

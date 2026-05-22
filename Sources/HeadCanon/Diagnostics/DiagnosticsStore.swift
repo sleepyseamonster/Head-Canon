@@ -2,6 +2,7 @@ import Foundation
 
 protocol DiagnosticsStoring: Sendable {
     func persist(_ record: DictationAttemptRecord) async throws
+    func persistLiveState(_ record: LiveDiagnosticsRecord) async throws
     func clear() async throws
     func diagnosticsDirectoryURL() async throws -> URL
 }
@@ -58,6 +59,14 @@ actor DiagnosticsStore: DiagnosticsStoring {
         try append(line, to: attemptsURL)
         try payload.write(to: latestURL, options: [.atomic])
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: latestURL.path)
+    }
+
+    func persistLiveState(_ record: LiveDiagnosticsRecord) async throws {
+        let directoryURL = try resolvedDiagnosticsDirectoryURL(createIfNeeded: true)
+        let liveURL = directoryURL.appendingPathComponent("live-state.json", isDirectory: false)
+        let payload = try encoder.encode(record)
+        try payload.write(to: liveURL, options: [.atomic])
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: liveURL.path)
     }
 
     func clear() async throws {

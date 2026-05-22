@@ -15,28 +15,33 @@
 - Throwaway build artifact: `/Users/worldbuilder/Desktop/Head Canon/dist/HeadCanon.app`
 - Platform target: macOS 14+, Apple Silicon first
 - Current installed app identifier: `local.headcanon.app`
-- Current installed app is ad-hoc signed, not signed with a stable identity
+- Current installed app is signed with `HeadCanon Local Signing` in the latest D-Bug pass.
+- Last D-Bug-installed CDHash on 2026-05-22 07:02 MST: `1022e255cdb3a6deddca5a2ac0a62111f29cbebd`.
 
 ## Current Working State
-- Source builds cleanly with `swift build`
-- Tests pass with `swift test`
+- Source builds cleanly.
+- Tests passed with `swift test` at 97 tests in the latest D-Bug pass.
 - App launches from `/Applications/HeadCanon.app`
-- Microphone permission has been reported as granted in the UI
-- OpenAI API key has been reported as valid in the UI
-- Diagnostics and setup-action improvements were added to source
-- `Relaunch` was patched in source to use `/usr/bin/open -na <app>`
+- Microphone and Accessibility were granted in live diagnostics after the latest install.
+- OpenAI API key was usable; recent transcription attempts completed successfully before disk pressure.
+- Bounded dictation uses `gpt-4o-mini-transcribe` with `Standard Completed Recording`.
+- Successful Codex paste attempts may remain `unverifiedInsert`; the user accepts this as an honest limitation because Codex does not expose reliable AX text readback.
+- Live diagnostics are available with `./Scripts/diagnostics.swift live`.
+- Recovery actions include `Paste Last Transcript` and `Copy Last Transcript`.
 
 ## Current Broken State
-- Accessibility is still not reaching a granted state in the installed app
-- The app repeatedly hits TCC checks and remains in `Pending Approval`
-- The installed runtime has not yet proven end-to-end dictation in `TextEdit`
-- Hotkey, recording, transcription, and insertion are not yet proven live in the installed app
+- The latest sudden failure was not transcription: recording finalization failed with `Disk Full`.
+- Before cleanup, `/System/Volumes/Data` had roughly `635 MiB` free and reported `100%` capacity.
+- After D-Bug cleared regenerable developer/package caches, free space recovered to roughly `16 GiB`, but the app still needs disk-space readiness guardrails.
+- Builder's next task is disk-space/system-readiness implementation, not transcription model work.
 
 ## High-Signal Constraints
 - Do not test `dist/HeadCanon.app`
 - Do not mix bundle paths during one checkpoint
-- Do not expand beyond `TextEdit` until the core loop is proven there
-- Reinstalling the ad-hoc app can reset trust and muddy TCC results
+- Do not treat successful Codex `unverifiedInsert` as a transcription failure.
+- Do not automatically delete user files or broad app caches.
+- Keep disk cleanup scripts report-only unless touching Head Canon-owned scratch files.
+- Reinstalling can reset trust and muddy TCC results; install only when intentionally updating `/Applications/HeadCanon.app`.
 
 ## Known Failure Taxonomy
 - `permission/readiness`
@@ -45,9 +50,15 @@
 - `recording stop`
 - `transcription`
 - `insertion`
+- `system readiness / disk space`
 
 ## Builder Heuristics Learned
 - Runtime state and source state must be logged separately
 - macOS trust bugs can dominate all later debugging if not isolated first
 - If a button appears dead in the UI, verify the implementation path before assuming user error
 - Add in-app diagnostics early when external system state is ambiguous
+- If the user says "transcription broke," check `./Scripts/diagnostics.swift live` before patching transcription. A `recordingStop`/`Disk Full` failure means the request never started.
+
+## Current Builder Assignment
+- See [2026-05-22-disk-readiness-handoff.md](/Users/worldbuilder/Desktop/Head%20Canon/Builder/handoffs/2026-05-22-disk-readiness-handoff.md).
+- Implement disk-space readiness checks, actionable disk-full copy, and a read-only `Scripts/disk_health.sh` helper.

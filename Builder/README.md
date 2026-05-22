@@ -25,6 +25,8 @@ Files:
   Builder helper scripts for repeatable capture and logging.
 - [logs](/Users/worldbuilder/Desktop/Head%20Canon/Builder/logs)
   Append-only structured logs and generated artifacts.
+- [handoffs](/Users/worldbuilder/Desktop/Head%20Canon/Builder/handoffs)
+  Full work prompts and implementation handoffs for Builder.
 
 Operating rules for Builder artifacts:
 - record observed facts before hypotheses

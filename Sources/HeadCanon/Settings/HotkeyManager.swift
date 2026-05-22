@@ -41,6 +41,7 @@ final class HotkeyManager: HotkeyManaging {
     private var registeredHotKeyID: UInt32?
     private var trackedModifierFlags: NSEvent.ModifierFlags?
     private var isModifierShortcutPressed = false
+    private var modifierReleaseWatchdogTask: Task<Void, Never>?
 
     func register(
         shortcut: HotkeyShortcut,
@@ -96,6 +97,8 @@ final class HotkeyManager: HotkeyManaging {
             NSEvent.removeMonitor(localFlagsMonitor)
             self.localFlagsMonitor = nil
         }
+
+        stopModifierReleaseWatchdog()
 
         if Self.activeManager === self {
             Self.activeManager = nil
@@ -188,8 +191,10 @@ final class HotkeyManager: HotkeyManaging {
         isModifierShortcutPressed = isPressed
 
         if isPressed {
+            startModifierReleaseWatchdog(requiredModifiers: trackedModifierFlags)
             onPress?()
         } else {
+            stopModifierReleaseWatchdog()
             onRelease?(
                 HotkeyReleaseContext(
                     source: source,
@@ -197,6 +202,68 @@ final class HotkeyManager: HotkeyManaging {
                 )
             )
         }
+    }
+
+    private func startModifierReleaseWatchdog(requiredModifiers: NSEvent.ModifierFlags) {
+        stopModifierReleaseWatchdog()
+        modifierReleaseWatchdogTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .milliseconds(100))
+                } catch {
+                    return
+                }
+
+                guard let self, self.isModifierShortcutPressed else {
+                    return
+                }
+
+                guard !self.currentShortcutIsReleased(requiredModifiers: requiredModifiers) else {
+                    self.isModifierShortcutPressed = false
+                    self.modifierReleaseWatchdogTask = nil
+                    self.onRelease?(
+                        HotkeyReleaseContext(
+                            source: .modifierStateWatchdog,
+                            observedAt: Date()
+                        )
+                    )
+                    return
+                }
+            }
+        }
+    }
+
+    private func currentShortcutIsReleased(requiredModifiers: NSEvent.ModifierFlags) -> Bool {
+        let normalizedRequiredFlags = Self.normalizedModifierFlags(requiredModifiers)
+        let combinedFlags = Self.normalizedModifierFlags(Self.currentModifierFlags(stateID: .combinedSessionState))
+        let hidFlags = Self.normalizedModifierFlags(Self.currentModifierFlags(stateID: .hidSystemState))
+
+        return combinedFlags != normalizedRequiredFlags || hidFlags != normalizedRequiredFlags
+    }
+
+    private func stopModifierReleaseWatchdog() {
+        modifierReleaseWatchdogTask?.cancel()
+        modifierReleaseWatchdogTask = nil
+    }
+
+    private static func currentModifierFlags(stateID: CGEventSourceStateID) -> NSEvent.ModifierFlags {
+        let flags = CGEventSource.flagsState(stateID)
+        var modifierFlags: NSEvent.ModifierFlags = []
+
+        if flags.contains(.maskCommand) {
+            modifierFlags.insert(.command)
+        }
+        if flags.contains(.maskControl) {
+            modifierFlags.insert(.control)
+        }
+        if flags.contains(.maskAlternate) {
+            modifierFlags.insert(.option)
+        }
+        if flags.contains(.maskShift) {
+            modifierFlags.insert(.shift)
+        }
+
+        return modifierFlags
     }
 
     private static func normalizedModifierFlags(_ flags: NSEvent.ModifierFlags) -> NSEvent.ModifierFlags {

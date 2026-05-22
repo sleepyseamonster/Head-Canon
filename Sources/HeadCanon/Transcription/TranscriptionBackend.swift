@@ -74,7 +74,7 @@ enum TranscriptionBackendError: LocalizedError {
         case .unexpectedResponse(let statusCode, _):
             "The transcription service returned status code \(statusCode)."
         case .invalidResponse:
-            "The transcription response could not be decoded."
+            "The transcription response was empty or could not be decoded."
         case .serializationFailure:
             "Head Canon could not build the transcription request."
         case .timeout(let seconds):

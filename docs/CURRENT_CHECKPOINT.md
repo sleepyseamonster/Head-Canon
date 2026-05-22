@@ -26,7 +26,15 @@ What exists now:
 - persistent local diagnostics under `~/Library/Application Support/HeadCanon/diagnostics/`
 - repo-local diagnostics reader at `Scripts/diagnostics.swift`
 - manual recovery through `pasteLastTranscript()`
+- manual recovery through `Copy Last Transcript`
 - one guarded retry for transient transport failures
+- one guarded retry for empty `200 OK` transcription responses
+
+Accepted limitation:
+
+- `Codex` is an opaque insertion target and does not expose reliable AX text readback.
+- Successful `Codex` paste attempts may remain `unverifiedInsert`; this is acceptable and should not be treated as a transcription failure.
+- If text is missing after a Codex `unverifiedInsert`, use `Paste Last Transcript` or `Copy Last Transcript` while investigating a Codex-specific verification/readback path.
 
 What the latest installed-app evidence says:
 
@@ -37,11 +45,10 @@ What the latest installed-app evidence says:
   - `request -> response p95`: `30158 ms`
   - `release -> inserted p50`: `1719 ms`
   - `release -> inserted p95`: `2498 ms`
-- the current success path is still strong, but the tail is not
+- the current success path is still strong, but older tails should be compared against the newer post-fix diagnostics before treating them as current
 - the current default path is `gpt-4o-mini-transcribe` plus `Standard Completed Recording`
-- the current failure profile is split evenly between:
-  - hard transcription timeouts near `30s`
-  - `Codex` insertion safety blocks after successful transcription when focus changes before paste fallback completes
+- older failure windows were split between hard transcription timeouts and `Codex` insertion safety blocks
+- later fixes addressed stale transcription transport, empty transcription responses, stuck recording recovery, and recovery actions
 - the strongest recent run set is still mostly `Codex` warm turns, so the current numbers should not be treated as a complete app-matrix result yet
 - the immediate next question is not model choice; it is whether timeout cancellation and `Codex` focus-drift fixes can stabilize the bounded path without adding mess
 
@@ -49,8 +56,9 @@ What the latest installed-app evidence says:
 1. `timeout-path defect`
    - some requests still fail at the app-level `30s` timeout
    - the in-flight request path needs explicit cancellation rather than more retry layering
-2. `codex focus-drift failures`
-   - some turns transcribe successfully but fail the paste safety check because the focused target changed before paste completed
+2. `codex verification limitation`
+   - `Codex` can transcribe and paste successfully while still reporting `unverifiedInsert`
+   - this is accepted unless the text is actually missing or the truth state becomes a real failure
 3. `model decision not yet locked`
    - `AGENTS.md` still names `gpt-4o-transcribe` as the initial priority, but the current healthy default is `gpt-4o-mini-transcribe`
    - that should become an explicit measured decision
@@ -84,7 +92,7 @@ What the latest installed-app evidence says:
    - `gpt-4o-mini-transcribe`
    - `Standard Completed Recording`
 2. Fix timeout cancellation cleanly and retest the bounded path.
-3. Instrument and tighten the `Codex` focus-drift path without weakening insertion safety.
+3. Treat successful `Codex` `unverifiedInsert` as acceptable; only investigate Codex further when text is missing or diagnostics show a failed truth state.
 4. After those fixes, run the longer installed-app soak test:
    - `30-50` warm short-phrase turns in `Codex`
    - `10` turns in `TextEdit`

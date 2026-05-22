@@ -250,12 +250,27 @@ struct SettingsRootView: View {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Last Transcript")
                                 .font(.headline)
+                            Text("If an opaque app reports an unverified insert, paste or copy this transcript for manual recovery.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                             Text(lastTranscript)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
                                 .textSelection(.enabled)
                         }
                         .padding(.top, 4)
+                    }
+
+                    HStack {
+                        Button("Paste Last Transcript") {
+                            model.pasteLastTranscript()
+                        }
+                        .disabled(model.lastTranscript?.isEmpty ?? true)
+
+                        Button("Copy Last Transcript") {
+                            model.copyLastTranscript()
+                        }
+                        .disabled(model.lastTranscript?.isEmpty ?? true)
                     }
 
                     Button("Clear Last Transcript") {
@@ -405,6 +420,27 @@ struct SettingsRootView: View {
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
+                    Text("Recording Recovery")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Use these if a recording or transcription state looks stuck. They do not expose transcript or audio contents.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack {
+                        Button("Finalize Recording Now") {
+                            model.finalizeCurrentRecordingNow()
+                        }
+                        .disabled(!model.canFinalizeCurrentRecording)
+
+                        Button("Cancel Current Dictation") {
+                            model.cancelCurrentDictation()
+                        }
+                        .disabled(!model.canCancelCurrentDictation)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Latest Recording Attempt")
                         .font(.subheadline.weight(.semibold))
 
@@ -488,6 +524,18 @@ struct SettingsRootView: View {
                     Text(model.lastFailureStage?.title ?? "None")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Last Truth State")
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.lastAttemptTruthState?.title ?? "None")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(model.lastAttemptTruthState?.detail ?? "No dictation outcome has been classified yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if let lastDiagnosticEvent = model.lastDiagnosticEvent {
@@ -597,6 +645,7 @@ struct SettingsRootView: View {
             diagnosticsFact("Paste Compatible", report.capabilities.pasteCompatible ? "Yes" : "No")
             diagnosticsFact("Planned Strategy", report.chosenStrategy.title)
             diagnosticsFact("Applied Strategy", report.appliedStrategy?.title ?? "Not executed")
+            diagnosticsFact("Verification", report.verificationOutcome?.title ?? "Unknown")
             diagnosticsFact("Placeholder Handling", report.placeholderHandlingOutcome?.title ?? "Unknown")
             diagnosticsFact("Strategy Reason", report.strategyReason)
 

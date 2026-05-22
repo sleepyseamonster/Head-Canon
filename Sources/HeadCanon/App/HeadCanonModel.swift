@@ -206,6 +206,9 @@ enum HotkeyReleaseSource: String, Equatable, Identifiable {
     case carbonKeyUp
     case globalModifierMonitor
     case localModifierMonitor
+    case modifierStateWatchdog
+    case recordingReleaseWatchdog
+    case recordingDurationLimit
     case unknown
 
     var id: String { rawValue }
@@ -218,6 +221,12 @@ enum HotkeyReleaseSource: String, Equatable, Identifiable {
             "Global Modifier Monitor"
         case .localModifierMonitor:
             "Local Modifier Monitor"
+        case .modifierStateWatchdog:
+            "Modifier State Watchdog"
+        case .recordingReleaseWatchdog:
+            "Recording Release Watchdog"
+        case .recordingDurationLimit:
+            "Recording Duration Limit"
         case .unknown:
             "Unknown"
         }
@@ -640,6 +649,7 @@ final class HeadCanonModel {
     var lastPermissionRefreshDate: Date?
     var lastPermissionSelfTestDate: Date?
     var lastFailureStage: DiagnosticFailureStage?
+    var lastAttemptTruthState: DictationAttemptTruthState?
     var lastDiagnosticEvent: DiagnosticEvent?
     var diagnosticEvents: [DiagnosticEvent] = []
     var lastRecordingAttemptDiagnostics: RecordingAttemptDiagnostics?
@@ -655,6 +665,9 @@ final class HeadCanonModel {
     @ObservationIgnored private var isRefreshingStatus = false
     @ObservationIgnored private var cachedAPIKey: String?
     @ObservationIgnored private var permissionRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var recordingDurationLimitTask: Task<Void, Never>?
+    @ObservationIgnored private var recordingReleaseWatchdogTask: Task<Void, Never>?
+    @ObservationIgnored private var liveDiagnosticsPersistTask: Task<Void, Never>?
     @ObservationIgnored private var activeTranscriptionAttemptID: UUID?
     @ObservationIgnored private var currentAttemptID: UUID?
     @ObservationIgnored private let diagnosticsSessionID = UUID()
@@ -663,7 +676,9 @@ final class HeadCanonModel {
         subsystem: Bundle.main.bundleIdentifier ?? "local.headcanon.app",
         category: "app-model"
     )
+    @ObservationIgnored private let hotkeyStateProvider: (HotkeyShortcut) -> Bool
     @ObservationIgnored private let transcriptionTimeout: Duration
+    @ObservationIgnored private let maximumRecordingDuration: Duration
 
     init(
         preferences: AppPreferences = AppPreferences(),
@@ -677,7 +692,9 @@ final class HeadCanonModel {
         hotkeyManager: (any HotkeyManaging)? = nil,
         statusOverlay: (any StatusOverlayPresenting)? = nil,
         clipboardWriter: (any ClipboardWriting)? = nil,
-        transcriptionTimeout: Duration = .seconds(30)
+        hotkeyStateProvider: @escaping (HotkeyShortcut) -> Bool = { $0.isPressedInCurrentSession() },
+        transcriptionTimeout: Duration = .seconds(30),
+        maximumRecordingDuration: Duration = .seconds(90)
     ) {
         self.preferences = preferences
         self.permissionsManager = permissionsManager ?? PermissionsManager()
@@ -692,8 +709,13 @@ final class HeadCanonModel {
         self.hotkeyManager = hotkeyManager ?? HotkeyManager()
         self.statusOverlay = statusOverlay ?? StatusOverlayController.shared
         self.clipboardWriter = clipboardWriter ?? SystemClipboardWriter()
+        self.hotkeyStateProvider = hotkeyStateProvider
         self.transcriptionTimeout = transcriptionTimeout
+        self.maximumRecordingDuration = maximumRecordingDuration
         self.lastValidationDate = preferences.lastValidationDate
+        self.audioCaptureService.unexpectedRecordingCompletionHandler = { [weak self] completion in
+            self?.handleUnexpectedAudioCaptureCompletion(completion)
+        }
     }
 
     var isReady: Bool {
@@ -746,8 +768,24 @@ final class HeadCanonModel {
         }
     }
 
+    var canCancelCurrentDictation: Bool {
+        workflowStatus.blocksNewDictation
+    }
+
+    var canFinalizeCurrentRecording: Bool {
+        workflowStatus == .recording
+    }
+
     var statusSummary: String {
-        setupBlockers.first?.detail ?? "Head Canon is ready."
+        if workflowStatus == .inserted, let lastAttemptTruthState {
+            return lastAttemptTruthState.detail
+        }
+
+        if workflowStatus == .failed, let lastErrorMessage, !lastErrorMessage.isEmpty {
+            return lastErrorMessage
+        }
+
+        return setupBlockers.first?.detail ?? "Head Canon is ready."
     }
 
     var checkpointSummary: String {
@@ -763,6 +801,10 @@ final class HeadCanonModel {
             return "Blocked on Accessibility access."
         }
 
+        if workflowStatus == .inserted, let lastAttemptTruthState {
+            return lastAttemptTruthState.detail
+        }
+
         switch apiKeyState {
         case .missing:
             return "Blocked on adding an OpenAI API key."
@@ -776,7 +818,7 @@ final class HeadCanonModel {
             break
         }
 
-        if isReady && !workflowStatus.blocksNewDictation && workflowStatus != .failed {
+        if isReady && !workflowStatus.blocksNewDictation && workflowStatus != .failed && workflowStatus != .inserted {
             return "Ready for the TextEdit dictation smoke test."
         }
 
@@ -818,6 +860,7 @@ final class HeadCanonModel {
             "Last permission refresh: \(permissionDebugSnapshot.lastPermissionRefreshDate?.formatted(date: .abbreviated, time: .standard) ?? "Never")",
             "Last self-test run: \(permissionDebugSnapshot.lastSelfTestDate?.formatted(date: .abbreviated, time: .standard) ?? "Never")",
             "Last failure stage: \(lastFailureStage?.title ?? "None")",
+            "Last truth state: \(lastAttemptTruthState?.title ?? "None")",
             "Last event: \(lastDiagnosticEvent?.summary ?? "None")",
         ]
 
@@ -1291,6 +1334,7 @@ final class HeadCanonModel {
         lastCapturedInsertionReport = nil
         lastInsertionAttemptReport = nil
         lastClipboardRecovery = nil
+        lastAttemptTruthState = nil
 
         Task {
             @MainActor in
@@ -1301,14 +1345,25 @@ final class HeadCanonModel {
                     allowPasteFallback: preferences.pasteFallbackEnabled,
                     observationLabel: "Current Context"
                 )
-                recordDiagnosticEvent("Recovered the last transcript into the current target context.", stage: .insertion, isFailure: false)
+                let truthState = truthState(for: lastInsertionAttemptReport)
+                lastAttemptTruthState = truthState
+                recordDiagnosticEvent(
+                    insertionSuccessMessage(for: truthState, recoveryAttempt: true),
+                    stage: .insertion,
+                    isFailure: false
+                )
                 setWorkflowStatus(.inserted)
-                persistCurrentAttempt(terminalState: .inserted)
+                persistCurrentAttempt(
+                    terminalState: .inserted,
+                    truthState: truthState
+                )
             } catch {
+                lastAttemptTruthState = truthState(forInsertionError: error)
                 recordFailure(.insertion, message: error.localizedDescription)
                 setWorkflowStatus(.failed, errorMessage: error.localizedDescription)
                 persistCurrentAttempt(
                     terminalState: .failed,
+                    truthState: lastAttemptTruthState ?? .insertionFailed,
                     failureStage: .insertion,
                     failureMessage: error.localizedDescription
                 )
@@ -1424,10 +1479,100 @@ final class HeadCanonModel {
         lastTranscript = nil
     }
 
+    func copyLastTranscript() {
+        applyPrivacyPreferences()
+
+        guard let lastTranscript, !lastTranscript.isEmpty else {
+            recordDiagnosticEvent(
+                "Copy Last Transcript was requested, but no retained transcript is available.",
+                isFailure: false
+            )
+            return
+        }
+
+        if clipboardWriter.write(lastTranscript) {
+            lastClipboardRecovery = ClipboardRecoveryState(
+                transcriptCopied: true,
+                reason: .insertionFailure
+            )
+            recordDiagnosticEvent(
+                "Copied the last transcript to the clipboard for manual recovery.",
+                stage: .insertion,
+                isFailure: false
+            )
+        } else {
+            lastClipboardRecovery = ClipboardRecoveryState(
+                transcriptCopied: false,
+                reason: .insertionFailure
+            )
+            recordDiagnosticEvent(
+                "Head Canon could not copy the last transcript to the clipboard.",
+                stage: .insertion,
+                isFailure: true
+            )
+        }
+    }
+
+    func finalizeCurrentRecordingNow() {
+        guard workflowStatus == .recording else {
+            recordDiagnosticEvent(
+                "Finalize Recording Now was requested, but no recording was active.",
+                stage: .recordingStop,
+                isFailure: false
+            )
+            return
+        }
+
+        guard audioCaptureService.isRecording else {
+            failStaleRecordingState(
+                message: "Finalize Recording Now found no active audio capture, so Head Canon cleared the stale recording state."
+            )
+            return
+        }
+
+        recordDiagnosticEvent(
+            "Finalize Recording Now requested from the app UI.",
+            stage: .recordingStop,
+            isFailure: false
+        )
+        handleHotkeyReleased(
+            HotkeyReleaseContext(
+                source: .unknown,
+                observedAt: Date()
+            )
+        )
+    }
+
+    func cancelCurrentDictation() {
+        guard workflowStatus.blocksNewDictation else {
+            recordDiagnosticEvent(
+                "Cancel Current Dictation was requested, but no dictation was in progress.",
+                isFailure: false
+            )
+            return
+        }
+
+        cancelRecordingReleaseWatchdog()
+        cancelRecordingDurationLimit()
+        audioCaptureService.cancelRecording()
+        activeTranscriptionAttemptID = nil
+        lastAttemptTruthState = .transcriptionCanceled
+        let message = "Head Canon canceled the current dictation from the app UI."
+        recordFailure(.recordingStop, message: message)
+        persistCurrentAttempt(
+            terminalState: .canceled,
+            truthState: .transcriptionCanceled,
+            failureStage: .recordingStop,
+            failureMessage: message
+        )
+        setWorkflowStatus(.failed, errorMessage: message)
+    }
+
     func clearDiagnosticHistory() {
         diagnosticEvents.removeAll()
         lastDiagnosticEvent = nil
         lastFailureStage = nil
+        lastAttemptTruthState = nil
         lastRecordingAttemptDiagnostics = nil
         lastCapturedInsertionReport = nil
         lastInsertionAttemptReport = nil
@@ -1438,6 +1583,7 @@ final class HeadCanonModel {
         Task {
             do {
                 try await diagnosticsStore.clear()
+                persistLiveState()
             } catch {
                 logger.error("Failed to clear persistent diagnostics: \(error.localizedDescription, privacy: .public)")
             }
@@ -1582,6 +1728,7 @@ final class HeadCanonModel {
         recordDiagnosticEvent("Observed hotkey press.", stage: .hotkey, isFailure: false)
 
         guard isReady else {
+            lastAttemptTruthState = .setupBlocked
             recordFailure(
                 .permissionReadiness,
                 message: setupBlockers.first?.detail ?? "Head Canon is not ready for dictation yet."
@@ -1634,16 +1781,21 @@ final class HeadCanonModel {
         )
         currentAttemptID = UUID()
         lastClipboardRecovery = nil
+        lastAttemptTruthState = nil
 
         do {
             try audioCaptureService.startRecording(preferredDeviceID: preferences.selectedMicrophoneID)
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withRecordingStarted(at: Date())
             recordDiagnosticEvent("Recording started from the global hotkey.", stage: .recordingStart, isFailure: false)
             setWorkflowStatus(.recording)
+            startRecordingReleaseWatchdog()
+            startRecordingDurationLimit()
         } catch {
+            lastAttemptTruthState = .recordingFailed
             recordFailure(.recordingStart, message: error.localizedDescription)
             persistCurrentAttempt(
                 terminalState: .failed,
+                truthState: .recordingFailed,
                 failureStage: .recordingStart,
                 failureMessage: error.localizedDescription
             )
@@ -1653,16 +1805,20 @@ final class HeadCanonModel {
 
     private func handleHotkeyReleased(_ context: HotkeyReleaseContext) {
         Task { @MainActor in
-            lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withHotkeyRelease(context)
+            cancelRecordingReleaseWatchdog()
+            cancelRecordingDurationLimit()
+            guard workflowStatus == .recording else {
+                return
+            }
+
             guard audioCaptureService.isRecording else {
-                recordDiagnosticEvent(
-                    "Observed hotkey release from \(context.source.title) without an active recording.",
-                    stage: .hotkey,
-                    isFailure: false
+                failStaleRecordingState(
+                    message: "Head Canon saw a hotkey release after audio capture had already stopped, so it cleared the stale recording state."
                 )
                 return
             }
 
+            lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withHotkeyRelease(context)
             let processingStateTimestamp = Date()
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withFinalizingStateShown(at: processingStateTimestamp)
             recordDiagnosticEvent(
@@ -1694,9 +1850,11 @@ final class HeadCanonModel {
             do {
                 input = try await audioCaptureService.stopRecording()
             } catch {
+                lastAttemptTruthState = .recordingFailed
                 recordFailure(.recordingStop, message: error.localizedDescription)
                 persistCurrentAttempt(
                     terminalState: .failed,
+                    truthState: .recordingFailed,
                     failureStage: .recordingStop,
                     failureMessage: error.localizedDescription
                 )
@@ -1728,6 +1886,93 @@ final class HeadCanonModel {
         }
     }
 
+    private func handleUnexpectedAudioCaptureCompletion(_ completion: AudioCaptureUnexpectedCompletion) {
+        guard workflowStatus == .recording else {
+            recordDiagnosticEvent(
+                "Audio capture completed unexpectedly while workflow status was \(workflowStatus.title).",
+                stage: .recordingStop,
+                isFailure: workflowStatus.blocksNewDictation
+            )
+            return
+        }
+
+        switch completion {
+        case .finished(let input):
+            continueAfterUnexpectedAudioCompletion(input)
+        case .failed(let message):
+            failStaleRecordingState(message: message)
+        }
+    }
+
+    private func continueAfterUnexpectedAudioCompletion(_ input: BoundedAudioInput) {
+        cancelRecordingReleaseWatchdog()
+        cancelRecordingDurationLimit()
+
+        let recoveryContext = HotkeyReleaseContext(source: .unknown, observedAt: Date())
+        let finalizingAt = Date()
+        lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty)
+            .withHotkeyRelease(recoveryContext)
+            .withFinalizingStateShown(at: finalizingAt)
+            .withFinalized(
+                at: finalizingAt,
+                clipDuration: input.duration,
+                fileSizeBytes: fileSizeInBytes(at: input.fileURL)
+            )
+        recordDiagnosticEvent(
+            "Audio capture finished before a normal hotkey release path completed. Recovering with the finalized recording.",
+            stage: .recordingStop,
+            isFailure: false
+        )
+        setWorkflowStatus(.finalizingRecording)
+
+        let insertionTarget: (any TextInsertionTargetHandle)?
+        let insertionTargetError: String?
+
+        do {
+            insertionTarget = try textInsertionService.captureFocusedTarget()
+            insertionTargetError = nil
+            lastCapturedInsertionReport = try? textInsertionService.planInsertion(
+                target: insertionTarget,
+                allowPasteFallback: preferences.pasteFallbackEnabled,
+                observationLabel: "Unexpected Audio Completion Context"
+            )
+        } catch {
+            insertionTarget = nil
+            insertionTargetError = error.localizedDescription
+            lastCapturedInsertionReport = nil
+        }
+
+        let attemptID = UUID()
+        activeTranscriptionAttemptID = attemptID
+        Task { @MainActor [weak self] in
+            await self?.transcribeAndInsert(
+                input,
+                insertionTarget: insertionTarget,
+                insertionTargetError: insertionTargetError,
+                attemptID: attemptID
+            )
+        }
+    }
+
+    private func failStaleRecordingState(message: String) {
+        guard workflowStatus == .recording else {
+            return
+        }
+
+        cancelRecordingReleaseWatchdog()
+        cancelRecordingDurationLimit()
+        audioCaptureService.cancelRecording()
+        lastAttemptTruthState = .recordingFailed
+        recordFailure(.recordingStop, message: message)
+        persistCurrentAttempt(
+            terminalState: .failed,
+            truthState: .recordingFailed,
+            failureStage: .recordingStop,
+            failureMessage: message
+        )
+        setWorkflowStatus(.failed, errorMessage: message)
+    }
+
     private func transcribeAndInsert(
         _ input: BoundedAudioInput,
         insertionTarget: (any TextInsertionTargetHandle)?,
@@ -1738,6 +1983,7 @@ final class HeadCanonModel {
             try? FileManager.default.removeItem(at: input.fileURL)
             if activeTranscriptionAttemptID == attemptID {
                 activeTranscriptionAttemptID = nil
+                persistLiveState()
             }
         }
 
@@ -1749,9 +1995,11 @@ final class HeadCanonModel {
 
         guard let apiKey = cachedAPIKey, !apiKey.isEmpty else {
             apiKeyState = .missing
+            lastAttemptTruthState = .setupBlocked
             recordFailure(.permissionReadiness, message: APIKeyState.missing.detail)
             persistCurrentAttempt(
                 terminalState: .failed,
+                truthState: .setupBlocked,
                 failureStage: .permissionReadiness,
                 failureMessage: APIKeyState.missing.detail
             )
@@ -1797,6 +2045,7 @@ final class HeadCanonModel {
 
             guard let insertionTarget else {
                 lastInsertionAttemptReport = nil
+                lastAttemptTruthState = .insertionFailed
                 let failureMessage = handleInsertionFailure(
                     afterSuccessfulTranscription: result.text,
                     baseMessage: insertionTargetError ?? TextInsertionError.focusUnavailable.localizedDescription,
@@ -1804,6 +2053,7 @@ final class HeadCanonModel {
                 )
                 persistCurrentAttempt(
                     terminalState: .failed,
+                    truthState: .insertionFailed,
                     failureStage: .insertion,
                     failureMessage: failureMessage
                 )
@@ -1823,10 +2073,15 @@ final class HeadCanonModel {
                 observationLabel: "Insert-Time Context"
             )
 
+            let truthState = truthState(for: lastInsertionAttemptReport)
+            lastAttemptTruthState = truthState
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withInsertionCompleted(at: Date())
-            recordDiagnosticEvent("Transcript inserted into the intended target context.", stage: .insertion, isFailure: false)
+            recordDiagnosticEvent(insertionSuccessMessage(for: truthState), stage: .insertion, isFailure: false)
             setWorkflowStatus(.inserted)
-            persistCurrentAttempt(terminalState: .inserted)
+            persistCurrentAttempt(
+                terminalState: .inserted,
+                truthState: truthState
+            )
         } catch let error as TranscriptionBackendError {
             guard activeTranscriptionAttemptID == attemptID else {
                 return
@@ -1835,6 +2090,8 @@ final class HeadCanonModel {
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionFailureContext(
                 transcriptionFailureContext(from: error)
             )
+            let truthState = truthState(for: error)
+            lastAttemptTruthState = truthState
             if case .invalidAPIKey = error {
                 apiKeyState = .invalid("The stored OpenAI API key was rejected.")
                 lastValidationDate = nil
@@ -1848,6 +2105,7 @@ final class HeadCanonModel {
             }
             persistCurrentAttempt(
                 terminalState: terminalState,
+                truthState: truthState,
                 failureStage: .transcription,
                 failureMessage: error.localizedDescription
             )
@@ -1857,9 +2115,11 @@ final class HeadCanonModel {
                 return
             }
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionResponseCompleted(at: Date())
+            lastAttemptTruthState = .transcriptionCanceled
             recordFailure(.transcription, message: "Head Canon canceled the transcription request.")
             persistCurrentAttempt(
                 terminalState: .canceled,
+                truthState: .transcriptionCanceled,
                 failureStage: .transcription,
                 failureMessage: "Head Canon canceled the transcription request."
             )
@@ -1869,6 +2129,8 @@ final class HeadCanonModel {
                 return
             }
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionResponseCompleted(at: Date())
+            let truthState = truthState(forInsertionError: error)
+            lastAttemptTruthState = truthState
             let failureMessage = handleInsertionFailure(
                 afterSuccessfulTranscription: transcribedTextForRecovery ?? "",
                 baseMessage: error.localizedDescription,
@@ -1876,6 +2138,7 @@ final class HeadCanonModel {
             )
             persistCurrentAttempt(
                 terminalState: .failed,
+                truthState: truthState,
                 failureStage: .insertion,
                 failureMessage: failureMessage
             )
@@ -1952,7 +2215,11 @@ final class HeadCanonModel {
     }
 
     private func recalculateWorkflowStatus() {
-        guard !workflowStatus.blocksNewDictation else {
+        guard
+            !workflowStatus.blocksNewDictation,
+            workflowStatus != .failed,
+            workflowStatus != .inserted
+        else {
             return
         }
 
@@ -1996,9 +2263,93 @@ final class HeadCanonModel {
     }
 
     private func setWorkflowStatus(_ status: WorkflowStatus, errorMessage: String? = nil) {
+        if status != .recording {
+            cancelRecordingReleaseWatchdog()
+            cancelRecordingDurationLimit()
+        }
         workflowStatus = status
         lastErrorMessage = errorMessage
         statusOverlay.update(status: status, detail: overlayDetail(for: status, errorMessage: errorMessage))
+        persistLiveState()
+    }
+
+    private func startRecordingReleaseWatchdog() {
+        cancelRecordingReleaseWatchdog()
+        recordingReleaseWatchdogTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(150))
+
+            while !Task.isCancelled {
+                guard let self, self.workflowStatus == .recording else {
+                    return
+                }
+
+                guard self.audioCaptureService.isRecording else {
+                    self.failStaleRecordingState(
+                        message: "Head Canon's audio capture stopped while the app still thought it was recording. The stuck recording state was cleared."
+                    )
+                    return
+                }
+
+                guard self.hotkeyStateProvider(self.preferences.hotkey) else {
+                    self.recordDiagnosticEvent(
+                        "Recording release watchdog observed the hotkey is no longer physically pressed. Finalizing automatically.",
+                        stage: .recordingStop,
+                        isFailure: false
+                    )
+                    self.handleHotkeyReleased(
+                        HotkeyReleaseContext(
+                            source: .recordingReleaseWatchdog,
+                            observedAt: Date()
+                        )
+                    )
+                    return
+                }
+
+                try? await Task.sleep(for: .milliseconds(75))
+            }
+        }
+    }
+
+    private func cancelRecordingReleaseWatchdog() {
+        recordingReleaseWatchdogTask?.cancel()
+        recordingReleaseWatchdogTask = nil
+    }
+
+    private func startRecordingDurationLimit() {
+        cancelRecordingDurationLimit()
+        let maximumRecordingDuration = maximumRecordingDuration
+        recordingDurationLimitTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: maximumRecordingDuration)
+            } catch {
+                return
+            }
+
+            guard
+                let self,
+                self.workflowStatus == .recording,
+                self.audioCaptureService.isRecording
+            else {
+                return
+            }
+
+            self.recordDiagnosticEvent(
+                "Recording reached the \(Int(maximumRecordingDuration.timeInterval.rounded())) second safety limit. Finalizing automatically so the recording cannot get stuck.",
+                stage: .recordingStop,
+                isFailure: false
+            )
+            self.handleHotkeyReleased(
+                HotkeyReleaseContext(
+                    source: .recordingDurationLimit,
+                    observedAt: Date()
+                )
+            )
+        }
+    }
+
+    private func cancelRecordingDurationLimit() {
+        recordingDurationLimitTask?.cancel()
+        recordingDurationLimitTask = nil
     }
 
     private func recordFailure(_ stage: DiagnosticFailureStage, message: String) {
@@ -2022,20 +2373,86 @@ final class HeadCanonModel {
         if diagnosticEvents.count > 8 {
             diagnosticEvents.removeLast(diagnosticEvents.count - 8)
         }
+        persistLiveState()
+    }
+
+    private func persistLiveState() {
+        let record = makeLiveDiagnosticsRecord()
+        let diagnosticsStore = self.diagnosticsStore
+        let logger = self.logger
+        let previousTask = liveDiagnosticsPersistTask
+
+        liveDiagnosticsPersistTask = Task {
+            await previousTask?.value
+            do {
+                try await diagnosticsStore.persistLiveState(record)
+            } catch {
+                logger.error("Failed to persist live diagnostics record: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func makeLiveDiagnosticsRecord() -> LiveDiagnosticsRecord {
+        let events = diagnosticEvents.map { event in
+            LiveDiagnosticEventRecord(
+                timestamp: event.timestamp,
+                summary: event.summary,
+                stage: event.stage?.rawValue,
+                isFailure: event.isFailure
+            )
+        }
+        let timing = lastRecordingAttemptDiagnostics.map { report in
+            LiveRecordingTimingRecord(
+                hotkeyPressedAt: report.hotkeyPressedAt,
+                recordingStartedAt: report.recordingStartedAt,
+                hotkeyReleasedAt: report.hotkeyReleasedAt,
+                finalizingStateShownAt: report.finalizingStateShownAt,
+                recordingFinalizedAt: report.recordingFinalizedAt,
+                transcriptionRequestStartedAt: report.transcriptionRequestStartedAt,
+                transcriptionResponseCompletedAt: report.transcriptionResponseCompletedAt,
+                insertionCompletedAt: report.insertionCompletedAt,
+                stopTrigger: report.stopTrigger?.rawValue
+            )
+        }
+
+        return LiveDiagnosticsRecord(
+            schemaVersion: LiveDiagnosticsRecord.schemaVersion,
+            updatedAt: Date(),
+            sessionID: diagnosticsSessionID,
+            currentAttemptID: currentAttemptID,
+            workflowStatus: workflowStatus.rawValue,
+            workflowStatusTitle: workflowStatus.title,
+            isReady: isReady,
+            audioCaptureIsRecording: audioCaptureService.isRecording,
+            hotkeyDisplayString: preferences.hotkey.displayString,
+            hotkeyPhysicallyPressed: hotkeyStateProvider(preferences.hotkey),
+            activeTranscriptionAttemptID: activeTranscriptionAttemptID,
+            lastFailureStage: lastFailureStage?.rawValue,
+            lastTruthState: lastAttemptTruthState?.rawValue,
+            lastErrorMessage: lastErrorMessage,
+            lastEvent: events.first,
+            recentEvents: events,
+            recordingTiming: timing
+        )
     }
 
     private func persistCurrentAttempt(
         terminalState: DictationAttemptTerminalState,
+        truthState: DictationAttemptTruthState,
         failureStage: DiagnosticFailureStage? = nil,
         failureMessage: String? = nil
     ) {
+        lastAttemptTruthState = truthState
         guard let record = makePersistentAttemptRecord(
             terminalState: terminalState,
+            truthState: truthState,
             failureStage: failureStage,
             failureMessage: failureMessage
         ) else {
             return
         }
+
+        persistLiveState()
 
         let diagnosticsStore = self.diagnosticsStore
         let logger = self.logger
@@ -2050,6 +2467,7 @@ final class HeadCanonModel {
 
     private func makePersistentAttemptRecord(
         terminalState: DictationAttemptTerminalState,
+        truthState: DictationAttemptTruthState,
         failureStage: DiagnosticFailureStage?,
         failureMessage: String?
     ) -> DictationAttemptRecord? {
@@ -2069,6 +2487,7 @@ final class HeadCanonModel {
             sessionID: diagnosticsSessionID,
             completedAt: Date(),
             terminalState: terminalState,
+            truthState: truthState,
             hotkeyDisplayString: preferences.hotkey.displayString,
             bundle: DictationAttemptBundleRecord(
                 path: currentAppPath,
@@ -2127,6 +2546,7 @@ final class HeadCanonModel {
                     appliedStrategy: report.appliedStrategy?.rawValue,
                     strategyReason: report.strategyReason,
                     predictedFailureClass: report.predictedFailureClass?.rawValue,
+                    verificationOutcome: report.verificationOutcome?.rawValue,
                     placeholderPresent: report.capabilities.hasPlaceholderValue,
                     placeholderLikelyActive: report.capabilities.placeholderLikelyActive,
                     placeholderAmbiguousValueDetected: report.capabilities.placeholderAmbiguousValueDetected,
@@ -2153,6 +2573,7 @@ final class HeadCanonModel {
                     appliedStrategy: report.appliedStrategy?.rawValue,
                     strategyReason: report.strategyReason,
                     predictedFailureClass: report.predictedFailureClass?.rawValue,
+                    verificationOutcome: report.verificationOutcome?.rawValue,
                     placeholderPresent: report.capabilities.hasPlaceholderValue,
                     placeholderLikelyActive: report.capabilities.placeholderLikelyActive,
                     placeholderAmbiguousValueDetected: report.capabilities.placeholderAmbiguousValueDetected,
@@ -2247,15 +2668,87 @@ final class HeadCanonModel {
         }
     }
 
+    private func truthState(for report: InsertionAttemptReport?) -> DictationAttemptTruthState {
+        guard let report else {
+            return .unverifiedInsert
+        }
+
+        guard report.appliedStrategy != nil, let verificationOutcome = report.verificationOutcome else {
+            return .unverifiedInsert
+        }
+
+        switch verificationOutcome {
+        case .verified:
+            return .verifiedInsert
+        case .unverified:
+            return .unverifiedInsert
+        }
+    }
+
+    private func truthState(for error: TranscriptionBackendError) -> DictationAttemptTruthState {
+        switch error {
+        case .invalidAPIKey:
+            .setupBlocked
+        case .networkUnavailable:
+            .transcriptionTransportFailure
+        case .unexpectedResponse, .invalidResponse, .serializationFailure, .notImplemented:
+            .transcriptionFailed
+        case .timeout:
+            .transcriptionTimedOut
+        }
+    }
+
+    private func truthState(forInsertionError error: Error) -> DictationAttemptTruthState {
+        guard let insertionError = error as? TextInsertionError else {
+            return .insertionFailed
+        }
+
+        switch insertionError {
+        case .focusChanged:
+            return DictationAttemptTruthState.focusChanged
+        case .accessibilityPermissionRequired:
+            return DictationAttemptTruthState.setupBlocked
+        case .secureTarget, .placeholderCleanupRequired:
+            return DictationAttemptTruthState.safetyBlock
+        case .unsupportedTarget, .pasteFallbackDisabled:
+            return DictationAttemptTruthState.unsupportedTarget
+        case .focusUnavailable, .accessibilityAPIError, .pasteFailed, .pasteDeliveryUnconfirmed:
+            return DictationAttemptTruthState.insertionFailed
+        }
+    }
+
+    private func insertionSuccessMessage(
+        for truthState: DictationAttemptTruthState,
+        recoveryAttempt: Bool = false
+    ) -> String {
+        switch truthState {
+        case .unverifiedInsert:
+            return recoveryAttempt
+                ? "Recovered the last transcript into the current target context, but Head Canon could not verify the resulting field contents."
+                : "Head Canon pasted into the intended target context, but could not verify the resulting field contents."
+        default:
+            return recoveryAttempt
+                ? "Recovered the last transcript into the current target context and verified the result."
+                : "Transcript inserted and verified in the intended target context."
+        }
+    }
+
     private func shouldRetryTranscription(after error: TranscriptionBackendError, attempt: Int) -> Bool {
         guard attempt < maxTransientTranscriptionAttempts else {
             return false
         }
 
-        guard case .networkUnavailable(let context) = error else {
+        switch error {
+        case .networkUnavailable(let context):
+            return shouldRetryNetworkTranscriptionFailure(context)
+        case .invalidResponse(let context):
+            return shouldRetryEmptyTranscriptionResponse(context)
+        default:
             return false
         }
+    }
 
+    private func shouldRetryNetworkTranscriptionFailure(_ context: TranscriptionFailureContext?) -> Bool {
         if let httpStatusCode = context?.httpStatusCode {
             switch httpStatusCode {
             case 408, 409, 425, 429:
@@ -2281,6 +2774,27 @@ final class HeadCanonModel {
         }
     }
 
+    private func shouldRetryEmptyTranscriptionResponse(_ context: TranscriptionFailureContext?) -> Bool {
+        guard
+            context?.httpStatusCode == 200,
+            context?.transportFailureStage == .readingResponseBody
+        else {
+            return false
+        }
+
+        let contentType = context?.contentType?.lowercased() ?? ""
+        return contentType.isEmpty || contentType.contains("text/plain")
+    }
+
+    private func retryDiagnosticSummary(after error: TranscriptionBackendError, attempt: Int) -> String {
+        switch error {
+        case .invalidResponse:
+            "Retrying transcription after an empty transcription response. Attempt \(attempt) of \(maxTransientTranscriptionAttempts)."
+        default:
+            "Retrying transcription after a transient transport failure. Attempt \(attempt) of \(maxTransientTranscriptionAttempts)."
+        }
+    }
+
     private func transcribeWithRetry(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
         var attempt = 1
 
@@ -2294,7 +2808,7 @@ final class HeadCanonModel {
 
                 attempt += 1
                 recordDiagnosticEvent(
-                    "Retrying transcription after a transient transport failure. Attempt \(attempt) of \(maxTransientTranscriptionAttempts).",
+                    retryDiagnosticSummary(after: error, attempt: attempt),
                     stage: .transcription,
                     isFailure: false
                 )
@@ -2389,6 +2903,9 @@ final class HeadCanonModel {
         case .transcribing:
             return "Transcribing your recording."
         case .inserted:
+            if lastAttemptTruthState == .unverifiedInsert {
+                return DictationAttemptTruthState.unverifiedInsert.detail
+            }
             return "Transcript inserted into the active app."
         case .failed:
             return "Head Canon hit an error."

@@ -15,3 +15,57 @@
 - The updated signed app bundle has been installed at `/Applications/HeadCanon.app`, but no post-install spoken dictation attempt has been captured yet.
 - Later diagnostics showed a separate transcription-stage outage: the active bounded backend could hang in a streaming preflight long enough for the app-level 30-second timeout to fire before standard fallback ran.
 - Bounded dictation now uses standard completed-recording transcription directly; streaming should not return to this path without explicit timeout isolation and installed-app diagnostics.
+- The screenshot at `2026-05-21 18:19` showed the recording HUD stuck in the bottom-right corner even though the user was not intentionally recording.
+- Recent diagnostics after the transcription fix showed successful standard transcription attempts, so the stuck HUD likely represented a live recording state that never received/finalized a release event rather than an OpenAI request failure.
+- Modifier-hold release handling now has a real modifier-state watchdog, and the app model has a maximum recording-duration safety fuse so recording cannot remain active indefinitely.
+- User reported the UI still got stuck in recording mode and release did not start transcription, so hotkey-manager-only release recovery was not enough.
+- The app model now runs its own recording release watchdog against `HotkeyShortcut.isPressedInCurrentSession()`, so finalization can happen even if no release callback reaches `HeadCanonModel`.
+- Zoom-out audit found that persisted diagnostics only cover completed or terminal attempts; a live stuck recording can leave `latest.json` pointing at the previous successful attempt.
+- A leftover playable `.m4a` from `2026-05-21 19:15:37 -0700` existed without a matching persisted attempt, suggesting a recording lifecycle/finalization or live-state observability gap.
+- Root-cause audit artifact saved at `D-Bug/artifacts/root-cause-audit-2026-05-21-stuck-recording.md`.
+- Live overlay crop confirmed the user-visible stuck UI is Head Canon's red recording HUD, not finalizing/transcribing.
+- macOS unified logs showed CoreAudio/CMIO microphone graph teardown at the same timestamp as the orphan `.m4a`; `lsof` showed no open recording file and `CGEventSource` showed no held modifiers.
+- Highest-confidence root cause as of this audit: audio capture can finish/tear down without the model leaving `.recording`, because unexpected delegate completion with no pending stop continuation is not surfaced back to `HeadCanonModel`.
+- Implemented the direct fix: unexpected audio completion is now surfaced to `HeadCanonModel`, successful finalized clips continue into transcription, and stopped-without-completion recording states fail cleanly instead of leaving the HUD stuck.
+- Installed `/Applications/HeadCanon.app` at `2026-05-21 19:33:52 -0700` with CDHash `c4493975a71a345c6cf230f45c07d75bc69cf4df`; the stuck HUD cleared and temp recordings were removed.
+- Added live-state diagnostics at `diagnostics/live-state.json` plus `Scripts/diagnostics.swift live`; this is now the source of truth for currently in-progress or stuck states.
+- Added visible recovery controls in menu/settings: `Finalize Recording Now` and `Cancel Current Dictation`.
+- Installed `/Applications/HeadCanon.app` at `2026-05-21 19:39:43 -0700` with CDHash `77604e4317dc70fa061f0aa1e3e2de747dca700c`; live diagnostics report `Ready`, no active audio recording, and no held hotkey.
+- Public Wispr Flow docs reinforce the current reliability direction: distinguish transcription success from insertion failure, expose recovery actions such as paste/copy last transcript, and keep a separate recovery path for stuck listening/no-audio states.
+- Zoom-out audit after the live-state build found no active recording/transcription blocker; the current highest-risk issue is Codex insertion verification, with recent attempts classified as `unverifiedInsert` on `appClipboardPaste`.
+- A live snapshot showed `workflowStatus == inserted` while `activeTranscriptionAttemptID` still had a UUID, likely because terminal live state persists before the `defer` clears the active transcription ID.
+
+## 2026-05-22
+- User reported that after roughly 10 dictations, recording/transcription stops working.
+- Live diagnostics showed the app was not actively recording; it was failed after a transcription timeout.
+- The last two attempts had valid finalized audio metadata but timed out after `~30 s` in transcription.
+- macOS unified logs at the final timeout showed CFNetwork reusing `Connection 23` for the OpenAI transcription POST, then timing out with zero response bytes.
+- The same connection later emitted QUIC blackhole detection and repeated `Operation timed out` read failures.
+- Highest-confidence root cause: long-lived `URLSession` reuse allowed stale CFNetwork/QUIC transport to survive across repeated dictation turns.
+- Implemented a targeted transport fix: standard bounded transcription now uses a fresh per-request `URLSession` and invalidates it after each request.
+- Secondary diagnostics fixes landed:
+  - late release events no longer overwrite the real stop trigger after recording already finalized
+  - live diagnostics writes are serialized to reduce ghost active-transcription states
+- Installed `/Applications/HeadCanon.app` at `2026-05-22 06:38:50 -0700` with CDHash `649008ef7d45f7182ba4171cfef3d823caa36c9b`.
+- Post-install live diagnostics report `Ready`, no active recording, no held hotkey, and no active transcription.
+- Continued post-fix audit through `6:45 AM` captured `11` completed post-install dictation attempts with `0` transcription failures/timeouts.
+- Post-fix request latency over those attempts: p50 `1647 ms`, p95 `3524 ms`.
+- Post-fix CFNetwork logs for pid `16531` show fresh connection IDs per transcription request and explicit connection cleanup after success.
+- No post-fix QUIC blackhole or `Operation timed out` entries were observed in the checked installed-app process window.
+- Remaining new finding: release handling has a benign race where `Recording Release Watchdog` may finalize before the global release callback, then the global release logs `without an active recording`.
+- Remaining product/reliability finding: all post-fix Codex attempts are still `unverifiedInsert`; transcription is healthier, but insertion verification remains unresolved.
+- Follow-up fix pass addressed the actionable current audit issues:
+  - duplicate late release events after watchdog finalization are now ignored instead of logged as no-active-recording noise
+  - production recording safety fuse is now `90 s` instead of `30 s`
+  - unverified insert copy now tells the user to use Paste or Copy Last Transcript if text is missing
+  - menu and settings now expose `Copy Last Transcript`
+- Codex remains an opaque app target: if AX does not expose focused text contents, Head Canon cannot honestly mark the insertion as verified. The fix is recoverability and clearer truth-state language, not pretending verification exists.
+- A further stuck-recording hardening pass found that the release watchdog still trusted one CoreGraphics state source. If `.combinedSessionState` stayed stale and reported Control+Option down, recording could wait for the long safety fuse.
+- Hotkey physical-state checks now require both `.combinedSessionState` and `.hidSystemState` to agree that the shortcut is still pressed; either source reporting release allows the modifier watchdog/model watchdog to finalize.
+- Installed `/Applications/HeadCanon.app` at `2026-05-22 06:56:47 -0700` with CDHash `fb25c48192f833e09ace95f558f89864dc78bbf9`.
+- A fresh post-install dictation at `6:58 AM` completed normally: recording finalized via `globalModifierMonitor`, transcription succeeded in `~2.03 s`, insertion reached `unverifiedInsert`, and live diagnostics showed no active recording or transcription afterward.
+- Test diagnostics hygiene issue fixed: direct unit-test `HeadCanonModel` constructors now use `NoOpDiagnosticsStore()` so `swift test` does not overwrite the installed app's `live-state.json`.
+- The `6:55 AM` transcription failure was not a transport timeout: OpenAI returned HTTP `200`, `text/plain`, and useful headers, but the response body was empty, so the app classified it as `transcriptionFailed`.
+- Empty `200 OK` plain-text transcription responses now retry once with a fresh request/session before failing; if the second response is still empty, the error says the transcription response was empty or undecodable.
+- Final installed build for this pass landed at `2026-05-22 07:02:25 -0700` with CDHash `1022e255cdb3a6deddca5a2ac0a62111f29cbebd`; live diagnostics reported `Ready`, no active recording, and no active transcription.
+- User explicitly accepted `Codex` staying `unverifiedInsert`: because Codex lacks reliable AX text readback, Head Canon should keep truthful classification and recovery actions instead of trying to mark those attempts verified. Do not count successful Codex `unverifiedInsert` attempts as transcription failures.

@@ -77,6 +77,7 @@ struct HeadCanonTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: StubAPIKeyStore(apiKey: nil),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -106,6 +107,7 @@ struct HeadCanonTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -131,6 +133,7 @@ struct HeadCanonTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -157,6 +160,7 @@ struct HeadCanonTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -259,6 +263,48 @@ struct HeadCanonTranscriptionBackendTests {
         #expect(capturedRequest?.bodyString.contains("text") == true)
         #expect(capturedRequest?.bodyString.contains("name=\"stream\"") == false)
         #expect(StandardTranscriptionURLProtocol.capturedRequests().count == 1)
+    }
+
+    @Test("Canceling bounded transcription cancels the in-flight URLSession task")
+    @MainActor
+    func cancelingBoundedTranscriptionCancelsInFlightRequest() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headcanon-transcription-cancel-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        try Data("fake audio".utf8).write(to: fileURL)
+        defer {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        HangingTranscriptionURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [HangingTranscriptionURLProtocol.self]
+        let backend = OpenAIBoundedTranscriptionBackend(
+            modelProvider: { .gpt4oMiniTranscribe },
+            session: URLSession(configuration: configuration)
+        )
+
+        let transcriptionTask = Task {
+            try await backend.transcribe(
+                BoundedAudioInput(fileURL: fileURL, mimeType: "audio/m4a", duration: 1.0),
+                apiKey: "test-key"
+            )
+        }
+
+        await HangingTranscriptionURLProtocol.waitUntilStarted()
+        transcriptionTask.cancel()
+
+        do {
+            _ = try await transcriptionTask.value
+            Issue.record("Expected cancellation to terminate the transcription task.")
+        } catch is CancellationError {
+            // Expected path.
+        } catch {
+            Issue.record("Expected CancellationError, received \(String(describing: error)).")
+        }
+
+        await HangingTranscriptionURLProtocol.waitUntilStopped()
+        #expect(HangingTranscriptionURLProtocol.stopCount() == 1)
     }
 
 }
@@ -391,6 +437,7 @@ struct HeadCanonPermissionDebuggerTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -530,6 +577,223 @@ struct HeadCanonSecurityTests {
         #expect(textInsertionService.insertedTexts == ["secret"])
     }
 
+    @Test("Recording safety limit finalizes when hotkey release is missed")
+    @MainActor
+    func recordingSafetyLimitFinalizesMissedRelease() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let textInsertionService = RecordingTextInsertionService()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            transcriptionBackend: StubTranscriptionBackend(transcript: "rescued"),
+            textInsertionService: textInsertionService,
+            hotkeyManager: hotkeyManager,
+            maximumRecordingDuration: .milliseconds(25)
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        for _ in 0..<50 {
+            if model.workflowStatus == .inserted || model.workflowStatus == .failed {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(!audioCaptureService.isRecording)
+        #expect(textInsertionService.insertedTexts == ["rescued"])
+        #expect(model.lastRecordingAttemptDiagnostics?.stopTrigger == .recordingDurationLimit)
+    }
+
+    @Test("Recording release watchdog finalizes when physical hotkey state is released")
+    @MainActor
+    func recordingReleaseWatchdogFinalizesMissedRelease() async {
+        var hotkeyIsPressed = true
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let textInsertionService = RecordingTextInsertionService()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            transcriptionBackend: StubTranscriptionBackend(transcript: "watchdog"),
+            textInsertionService: textInsertionService,
+            hotkeyManager: hotkeyManager,
+            hotkeyStateProvider: { _ in hotkeyIsPressed },
+            maximumRecordingDuration: .seconds(30)
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyIsPressed = false
+
+        for _ in 0..<50 {
+            if model.workflowStatus == .inserted || model.workflowStatus == .failed {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(!audioCaptureService.isRecording)
+        #expect(textInsertionService.insertedTexts == ["watchdog"])
+        #expect(model.lastRecordingAttemptDiagnostics?.stopTrigger == .recordingReleaseWatchdog)
+    }
+
+    @Test("Late release after watchdog finalization does not add noisy diagnostics")
+    @MainActor
+    func lateReleaseAfterWatchdogFinalizationIsIgnored() async {
+        var hotkeyIsPressed = true
+        let hotkeyManager = StubHotkeyManager()
+        let model = makeReadyModel(
+            transcriptionBackend: StubTranscriptionBackend(transcript: "watchdog"),
+            hotkeyManager: hotkeyManager,
+            hotkeyStateProvider: { _ in hotkeyIsPressed },
+            maximumRecordingDuration: .seconds(30)
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyIsPressed = false
+        await waitForWorkflowCompletion(model)
+
+        hotkeyManager.release(source: .globalModifierMonitor)
+        try? await Task.sleep(for: .milliseconds(20))
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(model.lastRecordingAttemptDiagnostics?.stopTrigger == .recordingReleaseWatchdog)
+        #expect(!model.diagnosticEvents.contains { $0.summary.contains("without an active recording") })
+    }
+
+    @Test("Unexpected audio completion recovers and starts transcription")
+    @MainActor
+    func unexpectedAudioCompletionRecoversAndStartsTranscription() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let textInsertionService = RecordingTextInsertionService()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            transcriptionBackend: StubTranscriptionBackend(transcript: "recovered"),
+            textInsertionService: textInsertionService,
+            hotkeyManager: hotkeyManager,
+            hotkeyStateProvider: { _ in false }
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        audioCaptureService.finishUnexpectedly(duration: 0.42)
+
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(!audioCaptureService.isRecording)
+        #expect(textInsertionService.insertedTexts == ["recovered"])
+        #expect(model.lastRecordingAttemptDiagnostics?.stopTrigger == .unknown)
+        #expect(model.lastRecordingAttemptDiagnostics?.recordingFinalizedAt != nil)
+    }
+
+    @Test("Recording watchdog clears stale recording state when audio already stopped")
+    @MainActor
+    func recordingWatchdogClearsStaleRecordingStateWhenAudioAlreadyStopped() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            hotkeyManager: hotkeyManager,
+            hotkeyStateProvider: { _ in true }
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        audioCaptureService.markStoppedWithoutCompletion()
+
+        for _ in 0..<50 {
+            if model.workflowStatus == .failed {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(model.workflowStatus == .failed)
+        #expect(!audioCaptureService.isRecording)
+        #expect(model.lastFailureStage == .recordingStop)
+        #expect(model.lastRecordingAttemptDiagnostics?.recordingFinalizedAt == nil)
+    }
+
+    @Test("Live diagnostics capture an in-progress recording state")
+    @MainActor
+    func liveDiagnosticsCaptureInProgressRecordingState() async {
+        let hotkeyManager = StubHotkeyManager()
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager,
+            hotkeyStateProvider: { _ in true }
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+
+        let liveState = await diagnosticsStore.waitForLiveState { record in
+            record.workflowStatus == WorkflowStatus.recording.rawValue
+                && record.audioCaptureIsRecording
+                && record.currentAttemptID != nil
+        }
+
+        #expect(liveState != nil)
+        #expect(liveState?.hotkeyDisplayString == "Hold Control + Option")
+        #expect(liveState?.hotkeyPhysicallyPressed == true)
+        #expect(liveState?.recordingTiming?.recordingStartedAt != nil)
+    }
+
+    @Test("Manual finalize completes an active recording")
+    @MainActor
+    func manualFinalizeCompletesActiveRecording() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let textInsertionService = RecordingTextInsertionService()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            transcriptionBackend: StubTranscriptionBackend(transcript: "manual"),
+            textInsertionService: textInsertionService,
+            hotkeyManager: hotkeyManager,
+            hotkeyStateProvider: { _ in true }
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        model.finalizeCurrentRecordingNow()
+
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(textInsertionService.insertedTexts == ["manual"])
+        #expect(model.lastRecordingAttemptDiagnostics?.stopTrigger == .unknown)
+    }
+
+    @Test("Manual cancel clears an active recording")
+    @MainActor
+    func manualCancelClearsActiveRecording() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        model.cancelCurrentDictation()
+
+        let records = await diagnosticsStore.waitForRecordCount(1)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(!audioCaptureService.isRecording)
+        #expect(model.lastAttemptTruthState == .transcriptionCanceled)
+        #expect(records.first?.terminalState == .canceled)
+    }
+
     @Test("Local status refresh does not revalidate the API key remotely")
     @MainActor
     func localStatusRefreshSkipsRemoteValidation() async {
@@ -573,6 +837,7 @@ struct HeadCanonSecurityTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -597,6 +862,7 @@ struct HeadCanonSecurityTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: FailingAPIKeyStore(loadError: APIKeyStoreError.loadFailed(errSecInteractionNotAllowed)),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -643,6 +909,7 @@ struct HeadCanonSecurityTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: apiKeyStore,
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: StubHotkeyManager()
         )
 
@@ -819,10 +1086,12 @@ struct HeadCanonSecurityTests {
         await waitForWorkflowCompletion(model)
 
         #expect(model.workflowStatus == .inserted)
+        #expect(model.lastAttemptTruthState == .verifiedInsert)
         #expect(textInsertionService.insertedTexts == ["secret"])
         #expect(textInsertionService.lastAllowPasteFallback == false)
         let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
         #expect(persistedRecords.first?.terminalState == .inserted)
+        #expect(persistedRecords.first?.truthState == .verifiedInsert)
         #expect(persistedRecords.first?.insertion?.observationLabel == "Current Context")
     }
 
@@ -854,6 +1123,20 @@ struct HeadCanonSecurityTests {
         #expect(model.lastTranscript == nil)
     }
 
+    @Test("User can copy retained transcript for manual recovery")
+    @MainActor
+    func copyLastTranscriptWritesToClipboard() {
+        let clipboardWriter = RecordingClipboardWriter()
+        let model = makeReadyModel(clipboardWriter: clipboardWriter)
+
+        model.lastTranscript = "secret"
+        model.copyLastTranscript()
+
+        #expect(clipboardWriter.writes == ["secret"])
+        #expect(model.lastClipboardRecovery?.transcriptCopied == true)
+        #expect(model.lastDiagnosticEvent?.summary == "Copied the last transcript to the clipboard for manual recovery.")
+    }
+
     @Test("Hotkey while blocked records permission readiness failure")
     @MainActor
     func blockedHotkeyRecordsPermissionFailureStage() async {
@@ -869,6 +1152,7 @@ struct HeadCanonSecurityTests {
             transcriptionBackend: StubTranscriptionBackend(),
             textInsertionService: StubTextInsertionService(),
             apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
+            diagnosticsStore: NoOpDiagnosticsStore(),
             hotkeyManager: hotkeyManager
         )
 
@@ -915,20 +1199,88 @@ struct HeadCanonSecurityTests {
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptCharacterCount == 4)
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptWordCount == 1)
         #expect(model.diagnosticsReport.contains("Latest recording attempt:"))
+        #expect(model.diagnosticsReport.contains("Last truth state: Verified Insert"))
         #expect(model.diagnosticsReport.contains("Stop trigger: Carbon Key-Up"))
         #expect(model.diagnosticsReport.contains("Finalizing state shown at:"))
         #expect(model.diagnosticsReport.contains("Release to recording finalized:"))
         #expect(model.diagnosticsReport.contains("Request start to response complete:"))
-        #expect(model.lastDiagnosticEvent?.summary == "Transcript inserted into the intended target context.")
+        #expect(model.lastAttemptTruthState == .verifiedInsert)
+        #expect(model.lastDiagnosticEvent?.summary == "Transcript inserted and verified in the intended target context.")
         #expect(model.lastDiagnosticEvent?.stage == .insertion)
 
         let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
         #expect(persistedRecords.count == 1)
         #expect(persistedRecords.first?.terminalState == .inserted)
+        #expect(persistedRecords.first?.truthState == .verifiedInsert)
         #expect(persistedRecords.first?.backend.identifier == "stub")
         #expect(persistedRecords.first?.releaseTimeInsertion?.observationLabel == "Release-Time Context")
         #expect(persistedRecords.first?.insertion?.appliedStrategy == InsertionStrategy.customEditorPaste.rawValue)
+        #expect(persistedRecords.first?.insertion?.verificationOutcome == InsertionVerificationOutcome.verified.rawValue)
         #expect(persistedRecords.first?.failure == nil)
+
+        let settledLiveState = await diagnosticsStore.waitForLiveState { record in
+            record.workflowStatus == WorkflowStatus.inserted.rawValue
+                && record.currentAttemptID == nil
+                && record.activeTranscriptionAttemptID == nil
+        }
+        #expect(settledLiveState != nil)
+    }
+
+    @Test("Unverified insertion records an honest truth state")
+    @MainActor
+    func unverifiedInsertionRecordsHonestTruthState() async {
+        let hotkeyManager = StubHotkeyManager()
+        let textInsertionService = RecordingTextInsertionService()
+        textInsertionService.insertVerificationOutcome = .unverified
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            textInsertionService: textInsertionService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(model.lastAttemptTruthState == .unverifiedInsert)
+        #expect(model.checkpointSummary == DictationAttemptTruthState.unverifiedInsert.detail)
+        #expect(model.lastDiagnosticEvent?.summary == "Head Canon pasted into the intended target context, but could not verify the resulting field contents.")
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.terminalState == .inserted)
+        #expect(persistedRecords.first?.truthState == .unverifiedInsert)
+        #expect(persistedRecords.first?.insertion?.verificationOutcome == InsertionVerificationOutcome.unverified.rawValue)
+    }
+
+    @Test("Missing execution verification metadata stays unverified")
+    @MainActor
+    func missingExecutionVerificationMetadataStaysUnverified() async {
+        let hotkeyManager = StubHotkeyManager()
+        let textInsertionService = RecordingTextInsertionService()
+        textInsertionService.omitExecutionVerificationOutcome = true
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            textInsertionService: textInsertionService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(model.lastAttemptTruthState == .unverifiedInsert)
+        #expect(model.lastDiagnosticEvent?.summary == "Head Canon pasted into the intended target context, but could not verify the resulting field contents.")
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.terminalState == .inserted)
+        #expect(persistedRecords.first?.truthState == .unverifiedInsert)
+        #expect(persistedRecords.first?.insertion?.verificationOutcome == nil)
     }
 
     @Test("Concrete diagnostics store writes latest record and clears persisted files")
@@ -959,13 +1311,38 @@ struct HeadCanonSecurityTests {
         #expect(remainingItems.isEmpty)
     }
 
+    @Test("Diagnostics store decodes legacy records by inferring the truth state")
+    func diagnosticsStoreDecodesLegacyRecords() async throws {
+        let tempRootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeadCanonLegacyDiagnosticsTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempRootURL, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempRootURL)
+        }
+
+        let store = DiagnosticsStore(appSupportDirectoryURL: tempRootURL, maxLogFileBytes: 8_192, maxRotatedFiles: 2)
+        let directoryURL = try await store.diagnosticsDirectoryURL()
+        let latestURL = directoryURL.appendingPathComponent("latest.json", isDirectory: false)
+
+        try legacyAttemptRecordData(
+            from: sampleAttemptRecord(),
+            schemaVersion: 2,
+            truthState: nil
+        ).write(to: latestURL, options: [.atomic])
+
+        let decodedRecord = try await store.latestRecord()
+        #expect(decodedRecord?.truthState == .verifiedInsert)
+    }
+
     @Test("Hung transcription times out and leaves transcribing state")
     @MainActor
     func hungTranscriptionTimesOut() async {
         let hotkeyManager = StubHotkeyManager()
         let transcriptionBackend = DelayedTranscriptionBackend(transcript: "late")
+        let diagnosticsStore = RecordingDiagnosticsStore()
         let model = makeReadyModel(
             transcriptionBackend: transcriptionBackend,
+            diagnosticsStore: diagnosticsStore,
             hotkeyManager: hotkeyManager,
             transcriptionTimeout: .milliseconds(50)
         )
@@ -976,19 +1353,24 @@ struct HeadCanonSecurityTests {
         await transcriptionBackend.waitUntilStarted()
 
         for _ in 0..<50 {
-            if model.workflowStatus == .failed {
+            if model.workflowStatus == WorkflowStatus.failed {
                 break
             }
             try? await Task.sleep(for: .milliseconds(10))
         }
 
-        #expect(model.workflowStatus == .failed)
-        #expect(model.lastFailureStage == .transcription)
+        #expect(model.workflowStatus == WorkflowStatus.failed)
+        #expect(model.lastFailureStage == DiagnosticFailureStage.transcription)
         #expect(model.lastErrorMessage == "Head Canon stopped waiting for transcription after 0.05 seconds.")
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptionRequestStartedAt != nil)
         #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseCompletedAt != nil)
         await transcriptionBackend.waitUntilCancelled()
         #expect(transcriptionBackend.cancellationCount == 1)
+
+        let failedLiveRecord = await diagnosticsStore.waitForLiveState {
+            $0.workflowStatus == WorkflowStatus.failed.rawValue
+        }
+        #expect(failedLiveRecord?.activeTranscriptionAttemptID == nil)
     }
 
     @Test("Failed transcription records transport diagnostics")
@@ -1101,6 +1483,70 @@ struct HeadCanonSecurityTests {
         let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
         #expect(persistedRecords.first?.terminalState == .inserted)
         #expect(persistedRecords.first?.transcript.characterCount == 9)
+    }
+
+    @Test("Empty transcription response retries once before failing")
+    @MainActor
+    func emptyTranscriptionResponseRetriesOnce() async {
+        let hotkeyManager = StubHotkeyManager()
+        let textInsertionService = RecordingTextInsertionService()
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let backend = SequencedTranscriptionBackend(results: [
+            .failure(
+                .invalidResponse(
+                    TranscriptionFailureContext(
+                        requestMode: .standardCompletedRecording,
+                        fellBackFromStreaming: false,
+                        httpStatusCode: 200,
+                        requestID: "req_empty",
+                        openAIProcessingMS: 701,
+                        contentType: "text/plain; charset=utf-8",
+                        responseHeadersReceivedMS: 975,
+                        transportFailureStage: .readingResponseBody,
+                        networkErrorDomain: nil,
+                        networkErrorCode: nil,
+                        networkErrorCodeName: nil
+                    )
+                )
+            ),
+            .success(
+                TranscriptionResult(
+                    text: "second pass recovered",
+                    backendID: "sequenced",
+                    duration: nil,
+                    responseMetadata: TranscriptionResponseMetadata(
+                        requestMode: .standardCompletedRecording,
+                        fellBackFromStreaming: false,
+                        httpStatusCode: 200,
+                        requestID: "req_empty_retry_success",
+                        openAIProcessingMS: 130,
+                        contentType: "text/plain",
+                        responseHeadersReceivedMS: 410
+                    )
+                )
+            ),
+        ])
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            textInsertionService: textInsertionService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(backend.transcribeCallCount == 2)
+        #expect(textInsertionService.insertedTexts == ["second pass recovered"])
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionRequestID == "req_empty_retry_success")
+        #expect(model.diagnosticEvents.contains(where: { $0.summary.contains("Retrying transcription after an empty transcription response.") }))
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.terminalState == .inserted)
+        #expect(persistedRecords.first?.transcript.characterCount == 21)
     }
 
     @Test("Invalid API key failure does not retry transcription")
@@ -1949,7 +2395,9 @@ private func makeReadyModel(
     diagnosticsStore: any DiagnosticsStoring = NoOpDiagnosticsStore(),
     hotkeyManager: StubHotkeyManager = StubHotkeyManager(),
     clipboardWriter: any ClipboardWriting = RecordingClipboardWriter(),
-    transcriptionTimeout: Duration = .seconds(30)
+    hotkeyStateProvider: @escaping (HotkeyShortcut) -> Bool = { _ in true },
+    transcriptionTimeout: Duration = .seconds(30),
+    maximumRecordingDuration: Duration = .seconds(90)
 ) -> HeadCanonModel {
     if !preferences.hasCachedValidation(for: "test-key") {
         preferences.persistValidatedAPIKey("test-key", validatedAt: Date(timeIntervalSince1970: 1_715_000_000))
@@ -1970,7 +2418,9 @@ private func makeReadyModel(
         diagnosticsStore: diagnosticsStore,
         hotkeyManager: hotkeyManager,
         clipboardWriter: clipboardWriter,
-        transcriptionTimeout: transcriptionTimeout
+        hotkeyStateProvider: hotkeyStateProvider,
+        transcriptionTimeout: transcriptionTimeout,
+        maximumRecordingDuration: maximumRecordingDuration
     )
 }
 
@@ -2026,6 +2476,7 @@ private struct StubPermissionDebugService: PermissionDebugging {
 @MainActor
 private final class StubAudioCaptureService: AudioCapturing {
     var isRecording = false
+    var unexpectedRecordingCompletionHandler: ((AudioCaptureUnexpectedCompletion) -> Void)?
     private(set) var startCallCount = 0
     var recordedDuration: TimeInterval? = 1.25
     var recordedFileSizeBytes = 2_048
@@ -2055,6 +2506,33 @@ private final class StubAudioCaptureService: AudioCapturing {
 
     func cancelRecording() {
         isRecording = false
+    }
+
+    func finishUnexpectedly(duration: TimeInterval? = 1.25) {
+        isRecording = false
+        let fileURL = makeRecordingFile()
+        unexpectedRecordingCompletionHandler?(
+            .finished(
+                BoundedAudioInput(
+                    fileURL: fileURL,
+                    mimeType: "audio/mp4",
+                    duration: duration
+                )
+            )
+        )
+    }
+
+    func markStoppedWithoutCompletion() {
+        isRecording = false
+    }
+
+    private func makeRecordingFile() -> URL {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headcanon-test-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        let byteCount = max(recordedFileSizeBytes, 1)
+        try? Data(count: byteCount).write(to: fileURL)
+        return fileURL
     }
 }
 
@@ -2160,6 +2638,8 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
     private(set) var executionPlanningCallCount = 0
     var focusedTarget: StubTextInsertionTargetHandle = StubTextInsertionTargetHandle(id: "stub-target")
     var supportsDirectInsert = false
+    var insertVerificationOutcome: InsertionVerificationOutcome = .verified
+    var omitExecutionVerificationOutcome = false
     var captureError: Error?
     var insertError: Error?
     private var captureCallCount = 0
@@ -2256,9 +2736,26 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
             observationLabel: observationLabel
         )
         let appliedStrategy: InsertionStrategy = supportsDirectInsert ? .axValueReplacement : .customEditorPaste
+        if omitExecutionVerificationOutcome {
+            return InsertionAttemptReport(
+                observedAt: report.observedAt,
+                observationLabel: report.observationLabel,
+                capabilities: report.capabilities,
+                allowPasteFallback: report.allowPasteFallback,
+                chosenStrategy: report.chosenStrategy,
+                appliedStrategy: appliedStrategy,
+                predictedFailureClass: report.predictedFailureClass,
+                strategyReason: report.strategyReason,
+                verificationOutcome: nil,
+                placeholderHandlingOutcome: .noneNeeded,
+                rejectedStrategies: report.rejectedStrategies
+            )
+        }
+
         return report.withExecution(
             appliedStrategy: appliedStrategy,
-            placeholderHandlingOutcome: .noneNeeded
+            placeholderHandlingOutcome: .noneNeeded,
+            verificationOutcome: insertVerificationOutcome
         )
     }
 
@@ -2422,6 +2919,8 @@ private struct StubAPIKeyStore: APIKeyStoring {
 actor NoOpDiagnosticsStore: DiagnosticsStoring {
     func persist(_ record: DictationAttemptRecord) async throws {}
 
+    func persistLiveState(_ record: LiveDiagnosticsRecord) async throws {}
+
     func clear() async throws {}
 
     func diagnosticsDirectoryURL() async throws -> URL {
@@ -2431,6 +2930,7 @@ actor NoOpDiagnosticsStore: DiagnosticsStoring {
 
 actor RecordingDiagnosticsStore: DiagnosticsStoring {
     private var records: [DictationAttemptRecord] = []
+    private var liveRecords: [LiveDiagnosticsRecord] = []
     private var didClear = false
     private let directoryURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("HeadCanonDiagnosticsStoreStub-\(UUID().uuidString)", isDirectory: true)
@@ -2439,8 +2939,13 @@ actor RecordingDiagnosticsStore: DiagnosticsStoring {
         records.append(record)
     }
 
+    func persistLiveState(_ record: LiveDiagnosticsRecord) async throws {
+        liveRecords.append(record)
+    }
+
     func clear() async throws {
         records.removeAll()
+        liveRecords.removeAll()
         didClear = true
     }
 
@@ -2450,6 +2955,10 @@ actor RecordingDiagnosticsStore: DiagnosticsStoring {
 
     func recordsSnapshot() -> [DictationAttemptRecord] {
         records
+    }
+
+    func liveRecordsSnapshot() -> [LiveDiagnosticsRecord] {
+        liveRecords
     }
 
     func clearCalled() -> Bool {
@@ -2467,6 +2976,18 @@ actor RecordingDiagnosticsStore: DiagnosticsStoring {
 
         return records
     }
+
+    func waitForLiveState(where predicate: @escaping @Sendable (LiveDiagnosticsRecord) -> Bool) async -> LiveDiagnosticsRecord? {
+        for _ in 0..<200 {
+            if let record = liveRecords.last(where: predicate) {
+                return record
+            }
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        return liveRecords.last(where: predicate)
+    }
 }
 
 private func sampleAttemptRecord() -> DictationAttemptRecord {
@@ -2476,6 +2997,7 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
         sessionID: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
         completedAt: Date(timeIntervalSince1970: 1_715_000_000),
         terminalState: .inserted,
+        truthState: .verifiedInsert,
         hotkeyDisplayString: "Control + Option + Space",
         bundle: DictationAttemptBundleRecord(
             path: "/Applications/HeadCanon.app",
@@ -2533,6 +3055,7 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
             appliedStrategy: nil,
             strategyReason: "Writable AX text field.",
             predictedFailureClass: nil,
+            verificationOutcome: nil,
             placeholderPresent: false,
             placeholderLikelyActive: false,
             placeholderAmbiguousValueDetected: false,
@@ -2557,6 +3080,7 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
             appliedStrategy: InsertionStrategy.axValueReplacement.rawValue,
             strategyReason: "Writable AX text field.",
             predictedFailureClass: nil,
+            verificationOutcome: InsertionVerificationOutcome.verified.rawValue,
             placeholderPresent: false,
             placeholderLikelyActive: false,
             placeholderAmbiguousValueDetected: false,
@@ -2573,6 +3097,34 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
         failure: nil,
         clipboardRecovery: nil
     )
+}
+
+private func legacyAttemptRecordData(
+    from record: DictationAttemptRecord,
+    schemaVersion: Int,
+    truthState: String?
+) throws -> Data {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+
+    let data = try encoder.encode(record)
+    guard var jsonObject = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw NSError(
+            domain: "HeadCanonTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Failed to build legacy diagnostics payload."]
+        )
+    }
+
+    jsonObject["schemaVersion"] = schemaVersion
+    if let truthState {
+        jsonObject["truthState"] = truthState
+    } else {
+        jsonObject.removeValue(forKey: "truthState")
+    }
+
+    return try JSONSerialization.data(withJSONObject: jsonObject, options: [.sortedKeys])
 }
 
 private struct CapturedTranscriptionRequest: Equatable, Sendable {
@@ -2681,6 +3233,99 @@ private final class StandardTranscriptionURLProtocol: URLProtocol, @unchecked Se
             }
         }
         return data
+    }
+}
+
+private struct HangingTranscriptionURLProtocolState: Sendable {
+    var startCount = 0
+    var stopCount = 0
+}
+
+private final class HangingTranscriptionURLProtocolStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state = HangingTranscriptionURLProtocolState()
+
+    func reset() {
+        lock.withLock {
+            state = HangingTranscriptionURLProtocolState()
+        }
+    }
+
+    func recordStart() {
+        lock.withLock {
+            state.startCount += 1
+        }
+    }
+
+    func recordStop() {
+        lock.withLock {
+            state.stopCount += 1
+        }
+    }
+
+    func startCount() -> Int {
+        lock.withLock {
+            state.startCount
+        }
+    }
+
+    func stopCount() -> Int {
+        lock.withLock {
+            state.stopCount
+        }
+    }
+}
+
+private final class HangingTranscriptionURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let store = HangingTranscriptionURLProtocolStore()
+    private var hasStopped = false
+
+    static func reset() {
+        store.reset()
+    }
+
+    static func stopCount() -> Int {
+        store.stopCount()
+    }
+
+    static func waitUntilStarted() async {
+        for _ in 0..<50 {
+            if store.startCount() > 0 {
+                return
+            }
+            await Task.yield()
+        }
+    }
+
+    static func waitUntilStopped() async {
+        for _ in 0..<50 {
+            if store.stopCount() > 0 {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.absoluteString == "https://api.openai.com/v1/audio/transcriptions"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.store.recordStart()
+    }
+
+    override func stopLoading() {
+        guard !hasStopped else {
+            return
+        }
+
+        hasStopped = true
+        Self.store.recordStop()
+        client?.urlProtocol(self, didFailWithError: URLError(.cancelled))
     }
 }
 

@@ -42,6 +42,7 @@ struct InsertionRecord: Decodable {
     let target: String?
     let chosenStrategy: String
     let appliedStrategy: String?
+    let verificationOutcome: String?
     let placeholderPresent: Bool?
     let placeholderLikelyActive: Bool?
     let placeholderAmbiguousValueDetected: Bool?
@@ -58,10 +59,50 @@ struct ClipboardRecoveryRecord: Decodable {
     let reason: String
 }
 
+struct LiveEventRecord: Decodable {
+    let timestamp: Date
+    let summary: String
+    let stage: String?
+    let isFailure: Bool
+}
+
+struct LiveTimingRecord: Decodable {
+    let hotkeyPressedAt: Date?
+    let recordingStartedAt: Date?
+    let hotkeyReleasedAt: Date?
+    let finalizingStateShownAt: Date?
+    let recordingFinalizedAt: Date?
+    let transcriptionRequestStartedAt: Date?
+    let transcriptionResponseCompletedAt: Date?
+    let insertionCompletedAt: Date?
+    let stopTrigger: String?
+}
+
+struct LiveStateRecord: Decodable {
+    let schemaVersion: Int
+    let updatedAt: Date
+    let sessionID: UUID
+    let currentAttemptID: UUID?
+    let workflowStatus: String
+    let workflowStatusTitle: String
+    let isReady: Bool
+    let audioCaptureIsRecording: Bool
+    let hotkeyDisplayString: String
+    let hotkeyPhysicallyPressed: Bool
+    let activeTranscriptionAttemptID: UUID?
+    let lastFailureStage: String?
+    let lastTruthState: String?
+    let lastErrorMessage: String?
+    let lastEvent: LiveEventRecord?
+    let recentEvents: [LiveEventRecord]
+    let recordingTiming: LiveTimingRecord?
+}
+
 struct AttemptRecord: Decodable {
     let attemptID: UUID
     let completedAt: Date
     let terminalState: TerminalState
+    let truthState: String?
     let hotkeyDisplayString: String
     let timing: TimingRecord
     let transcript: TranscriptRecord?
@@ -99,6 +140,15 @@ func loadLatestRecord(from directoryURL: URL) throws -> AttemptRecord {
     }
     let data = try Data(contentsOf: latestURL)
     return try decoder.decode(AttemptRecord.self, from: data)
+}
+
+func loadLiveState(from directoryURL: URL) throws -> LiveStateRecord {
+    let liveURL = directoryURL.appendingPathComponent("live-state.json", isDirectory: false)
+    guard FileManager.default.fileExists(atPath: liveURL.path) else {
+        throw NSError(domain: "HeadCanonDiagnostics", code: 3, userInfo: [NSLocalizedDescriptionKey: "No live diagnostics state found yet."])
+    }
+    let data = try Data(contentsOf: liveURL)
+    return try decoder.decode(LiveStateRecord.self, from: data)
 }
 
 func loadRecentRecords(from directoryURL: URL, limit: Int) throws -> [AttemptRecord] {
@@ -189,13 +239,80 @@ func appClass(for record: AttemptRecord) -> AppClass {
 }
 
 func failureLabel(for record: AttemptRecord) -> String {
-    if let failure = record.failure {
-        return failure.stage
+    inferredTruthState(for: record)
+}
+
+func inferredTruthState(for record: AttemptRecord) -> String {
+    if let truthState = record.truthState {
+        return truthState
     }
-    if record.terminalState == .inserted {
-        return "none"
+
+    switch record.terminalState {
+    case .inserted:
+        if insertionRecord(for: record)?.verificationOutcome == "unverified" {
+            return "unverifiedInsert"
+        }
+        return "verifiedInsert"
+    case .timedOut:
+        return "transcriptionTimedOut"
+    case .canceled:
+        return "transcriptionCanceled"
+    case .failed:
+        break
     }
-    return record.terminalState.rawValue
+
+    guard let failure = record.failure else {
+        return record.terminalState.rawValue
+    }
+
+    switch failure.stage {
+    case "permissionReadiness":
+        return "setupBlocked"
+    case "recordingStart", "recordingStop":
+        return "recordingFailed"
+    case "transcription":
+        if record.backend.transportFailureStage != nil
+            || record.backend.networkErrorDomain != nil
+            || record.backend.networkErrorCode != nil
+        {
+            return "transcriptionTransportFailure"
+        }
+        return "transcriptionFailed"
+    case "insertion":
+        let message = failure.message.lowercased()
+        if message.contains("focus") && message.contains("changed") {
+            return "focusChanged"
+        }
+        if message.contains("secure")
+            || message.contains("unsafe")
+            || message.contains("placeholder")
+        {
+            return "safetyBlock"
+        }
+        if message.contains("unsupported")
+            || message.contains("paste fallback")
+        {
+            return "unsupportedTarget"
+        }
+        if message.contains("accessibility") && message.contains("permission") {
+            return "setupBlocked"
+        }
+        return "insertionFailed"
+    default:
+        return record.terminalState.rawValue
+    }
+}
+
+func isVerifiedSuccess(for record: AttemptRecord) -> Bool {
+    inferredTruthState(for: record) == "verifiedInsert"
+}
+
+func isUnverifiedInsert(for record: AttemptRecord) -> Bool {
+    inferredTruthState(for: record) == "unverifiedInsert"
+}
+
+func isFailure(for record: AttemptRecord) -> Bool {
+    !isVerifiedSuccess(for: record) && !isUnverifiedInsert(for: record)
 }
 
 func formatPercentile(_ value: Int?) -> String {
@@ -209,10 +326,14 @@ func formatSummaryBlock(for records: [AttemptRecord]) -> [String] {
     let transcriptCharacterCounts = records.compactMap { $0.transcript?.characterCount }
     let transcriptWordCounts = records.compactMap { $0.transcript?.wordCount }
     let fallbackCount = records.filter { $0.backend.fellBackFromStreaming == true }.count
-    let failureCount = records.filter { $0.terminalState != .inserted }.count
+    let verifiedCount = records.filter(isVerifiedSuccess).count
+    let unverifiedCount = records.filter(isUnverifiedInsert).count
+    let failureCount = records.filter(isFailure).count
 
     return [
         "Attempts: \(records.count)",
+        "Verified Inserts: \(verifiedCount)",
+        "Unverified Inserts: \(unverifiedCount)",
         "Failures: \(failureCount)",
         "Streaming Fallbacks: \(fallbackCount)",
         "Request -> Response p50: \(formatPercentile(percentile(requestDurations, fraction: 0.5)))",
@@ -232,6 +353,7 @@ func printLatest(_ record: AttemptRecord) {
     print("Attempt: \(record.attemptID.uuidString)")
     print("Completed: \(record.completedAt.formatted(date: .abbreviated, time: .standard))")
     print("State: \(record.terminalState.rawValue)")
+    print("Truth State: \(inferredTruthState(for: record))")
     print("Hotkey: \(record.hotkeyDisplayString)")
     print("App Class: \(appClass(for: record).rawValue)")
     print("Request -> Response: \(record.timing.requestToResponseDurationMS.map { "\($0) ms" } ?? "Unknown")")
@@ -264,6 +386,7 @@ func printLatest(_ record: AttemptRecord) {
         }
         print("Planned Strategy: \(insertion.chosenStrategy)")
         print("Applied Strategy: \(insertion.appliedStrategy ?? "Unknown")")
+        print("Verification: \(insertion.verificationOutcome ?? "Unknown")")
         print("Placeholder Present: \(insertion.placeholderPresent == true ? "Yes" : "No")")
         print("Placeholder Likely Active: \(insertion.placeholderLikelyActive == true ? "Yes" : "No")")
         print("Placeholder Ambiguous Value: \(insertion.placeholderAmbiguousValueDetected == true ? "Yes" : "No")")
@@ -276,6 +399,50 @@ func printLatest(_ record: AttemptRecord) {
     if let clipboardRecovery = record.clipboardRecovery {
         print("Clipboard Recovery: \(clipboardRecovery.transcriptCopied ? "Copied" : "Not Copied")")
         print("Clipboard Recovery Reason: \(clipboardRecovery.reason)")
+    }
+}
+
+func printLive(_ record: LiveStateRecord) {
+    print("Updated: \(record.updatedAt.formatted(date: .abbreviated, time: .standard))")
+    print("Session: \(record.sessionID.uuidString)")
+    print("Current Attempt: \(record.currentAttemptID?.uuidString ?? "None")")
+    print("Workflow: \(record.workflowStatusTitle) (\(record.workflowStatus))")
+    print("Ready: \(record.isReady ? "Yes" : "No")")
+    print("Audio Capture Recording: \(record.audioCaptureIsRecording ? "Yes" : "No")")
+    print("Hotkey: \(record.hotkeyDisplayString)")
+    print("Hotkey Physically Pressed: \(record.hotkeyPhysicallyPressed ? "Yes" : "No")")
+    print("Active Transcription: \(record.activeTranscriptionAttemptID?.uuidString ?? "None")")
+    print("Last Failure Stage: \(record.lastFailureStage ?? "None")")
+    print("Last Truth State: \(record.lastTruthState ?? "None")")
+    print("Last Error: \(record.lastErrorMessage ?? "None")")
+
+    if let timing = record.recordingTiming {
+        print("Recording Started: \(timing.recordingStartedAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+        print("Hotkey Released: \(timing.hotkeyReleasedAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+        print("Finalizing Shown: \(timing.finalizingStateShownAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+        print("Recording Finalized: \(timing.recordingFinalizedAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+        print("Transcription Started: \(timing.transcriptionRequestStartedAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+        print("Insertion Completed: \(timing.insertionCompletedAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+        print("Stop Trigger: \(timing.stopTrigger ?? "Unknown")")
+    } else {
+        print("Recording Timing: None")
+    }
+
+    if let event = record.lastEvent {
+        print("Last Event: \(event.summary)")
+        print("Last Event Stage: \(event.stage ?? "None")")
+        print("Last Event Failed: \(event.isFailure ? "Yes" : "No")")
+        print("Last Event At: \(event.timestamp.formatted(date: .omitted, time: .standard))")
+    } else {
+        print("Last Event: None")
+    }
+
+    if !record.recentEvents.isEmpty {
+        print("Recent Events:")
+        for event in record.recentEvents.prefix(8) {
+            let stage = event.stage ?? "none"
+            print("- \(event.timestamp.formatted(date: .omitted, time: .standard)) | \(stage) | \(event.isFailure ? "failure" : "info") | \(event.summary)")
+        }
     }
 }
 
@@ -293,7 +460,7 @@ func printRecent(_ records: [AttemptRecord]) {
         let appliedStrategy = insertionRecord(for: record)?.appliedStrategy ?? insertionRecord(for: record)?.chosenStrategy ?? "unknown"
         let netCode = record.backend.networkErrorCodeName ?? record.backend.networkErrorCode.map(String.init) ?? "-"
         let headerMS = responseHeadersDurationMS(for: record).map(String.init) ?? "?"
-        print("\(record.completedAt.formatted(date: .omitted, time: .standard)) | \(record.terminalState.rawValue) | req \(requestMS) ms | hdr \(headerMS) ms | total \(insertionMS) ms | chars \(characterCount) | \(appClass(for: record).rawValue) | \(appName) | \(appliedStrategy) | net \(netCode)")
+        print("\(record.completedAt.formatted(date: .omitted, time: .standard)) | \(failureLabel(for: record)) | req \(requestMS) ms | hdr \(headerMS) ms | total \(insertionMS) ms | chars \(characterCount) | \(appClass(for: record).rawValue) | \(appName) | \(appliedStrategy) | net \(netCode)")
     }
 }
 
@@ -350,12 +517,14 @@ func printSummaryByAppClass(_ records: [AttemptRecord]) {
 }
 
 func printSummaryByFailure(_ records: [AttemptRecord]) {
-    if records.isEmpty {
-        print("No diagnostics records found.")
+    let failures = records.filter(isFailure)
+
+    if failures.isEmpty {
+        print(records.isEmpty ? "No diagnostics records found." : "No failure records found.")
         return
     }
 
-    let grouped = Dictionary(grouping: records, by: failureLabel)
+    let grouped = Dictionary(grouping: failures, by: failureLabel)
 
     for label in grouped.keys.sorted() {
         guard let groupedRecords = grouped[label] else {
@@ -371,6 +540,7 @@ func printSummaryByFailure(_ records: [AttemptRecord]) {
 
 func usage() {
     print("Usage:")
+    print("  Scripts/diagnostics.swift live")
     print("  Scripts/diagnostics.swift latest")
     print("  Scripts/diagnostics.swift recent [count]")
     print("  Scripts/diagnostics.swift summary [count]")
@@ -385,6 +555,8 @@ do {
     let directoryURL = try diagnosticsDirectoryURL()
 
     switch command {
+    case "live":
+        printLive(try loadLiveState(from: directoryURL))
     case "latest":
         printLatest(try loadLatestRecord(from: directoryURL))
     case "recent":

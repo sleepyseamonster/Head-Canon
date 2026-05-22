@@ -109,6 +109,91 @@ struct HotkeyShortcut: Equatable {
             .defaultPushToTalk
         }
     }
+
+    func isPressedInCurrentSession() -> Bool {
+        switch trigger {
+        case .modifierHold(let requiredModifiers):
+            return Self.modifierShortcutIsPressed(
+                requiredModifiers: requiredModifiers,
+                stateID: .combinedSessionState
+            ) && Self.modifierShortcutIsPressed(
+                requiredModifiers: requiredModifiers,
+                stateID: .hidSystemState
+            )
+        case .key(let keyCode, let carbonModifiers):
+            let requiredModifiers = Self.modifierFlags(fromCarbonModifiers: carbonModifiers)
+            return Self.keyShortcutIsPressed(
+                keyCode: keyCode,
+                requiredModifiers: requiredModifiers,
+                stateID: .combinedSessionState
+            ) && Self.keyShortcutIsPressed(
+                keyCode: keyCode,
+                requiredModifiers: requiredModifiers,
+                stateID: .hidSystemState
+            )
+        }
+    }
+
+    private static func modifierShortcutIsPressed(
+        requiredModifiers: NSEvent.ModifierFlags,
+        stateID: CGEventSourceStateID
+    ) -> Bool {
+        normalizedModifierFlags(currentModifierFlags(stateID: stateID))
+            == normalizedModifierFlags(requiredModifiers)
+    }
+
+    private static func keyShortcutIsPressed(
+        keyCode: UInt32,
+        requiredModifiers: NSEvent.ModifierFlags,
+        stateID: CGEventSourceStateID
+    ) -> Bool {
+        normalizedModifierFlags(currentModifierFlags(stateID: stateID))
+            .isSuperset(of: normalizedModifierFlags(requiredModifiers))
+            && CGEventSource.keyState(stateID, key: CGKeyCode(keyCode))
+    }
+
+    private static func currentModifierFlags(stateID: CGEventSourceStateID) -> NSEvent.ModifierFlags {
+        let flags = CGEventSource.flagsState(stateID)
+        var modifierFlags: NSEvent.ModifierFlags = []
+
+        if flags.contains(.maskCommand) {
+            modifierFlags.insert(.command)
+        }
+        if flags.contains(.maskControl) {
+            modifierFlags.insert(.control)
+        }
+        if flags.contains(.maskAlternate) {
+            modifierFlags.insert(.option)
+        }
+        if flags.contains(.maskShift) {
+            modifierFlags.insert(.shift)
+        }
+
+        return modifierFlags
+    }
+
+    private static func modifierFlags(fromCarbonModifiers carbonModifiers: UInt32) -> NSEvent.ModifierFlags {
+        var modifierFlags: NSEvent.ModifierFlags = []
+
+        if carbonModifiers & UInt32(cmdKey) != 0 {
+            modifierFlags.insert(.command)
+        }
+        if carbonModifiers & UInt32(controlKey) != 0 {
+            modifierFlags.insert(.control)
+        }
+        if carbonModifiers & UInt32(optionKey) != 0 {
+            modifierFlags.insert(.option)
+        }
+        if carbonModifiers & UInt32(shiftKey) != 0 {
+            modifierFlags.insert(.shift)
+        }
+
+        return modifierFlags
+    }
+
+    private static func normalizedModifierFlags(_ flags: NSEvent.ModifierFlags) -> NSEvent.ModifierFlags {
+        flags.intersection([.command, .control, .option, .shift])
+    }
 }
 
 @MainActor

@@ -13,6 +13,7 @@ ARTIFACT_PATH="$LATENCY_DIR/artifacts/benchmark-${STAMP}-${SAFE_LABEL}.md"
 CAPTURED_AT="$(date +%Y-%m-%dT%H:%M:%S%z)"
 
 LATEST_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" latest)"
+LIVE_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" live)"
 SUMMARY_20_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" summary 20)"
 SUMMARY_MODEL_50_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" summary-by-model 50)"
 SUMMARY_APP_50_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" summary-by-app-class 50)"
@@ -41,6 +42,17 @@ swift Scripts/diagnostics.swift latest
 Observed:
 \`\`\`text
 ${LATEST_OUTPUT}
+\`\`\`
+
+## Live State
+Command:
+\`\`\`bash
+swift Scripts/diagnostics.swift live
+\`\`\`
+
+Observed:
+\`\`\`text
+${LIVE_OUTPUT}
 \`\`\`
 
 ## Recent 20 Summary
