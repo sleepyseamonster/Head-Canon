@@ -33,7 +33,9 @@
 - The latest sudden failure was not transcription: recording finalization failed with `Disk Full`.
 - Before cleanup, `/System/Volumes/Data` had roughly `635 MiB` free and reported `100%` capacity.
 - After D-Bug cleared regenerable developer/package caches, free space recovered to roughly `16 GiB`, but the app still needs disk-space readiness guardrails.
-- Builder's next task is disk-space/system-readiness implementation, not transcription model work.
+- Disk-space readiness appears to have landed in the current runtime, but Builder should verify source/runtime alignment before treating it as complete.
+- A later audit found an inserted-overlay re-entry anomaly: one failed attempt recorded `pressToRecordingStartDurationMS` around `11s`, then sent a suspiciously tiny audio file for transcription and received an OpenAI `400`.
+- The recovery transcript UI still exists in source, but its large copyable panel is hidden whenever `lastTranscript` is empty, which makes the safety net appear missing after failures, relaunch, privacy clearing, or transcript clearing.
 
 ## High-Signal Constraints
 - Do not test `dist/HeadCanon.app`
@@ -61,4 +63,5 @@
 
 ## Current Builder Assignment
 - See [2026-05-22-disk-readiness-handoff.md](/Users/worldbuilder/Desktop/Head%20Canon/Builder/handoffs/2026-05-22-disk-readiness-handoff.md).
-- Implement disk-space readiness checks, actionable disk-full copy, and a read-only `Scripts/disk_health.sh` helper.
+- See [2026-05-22-inserted-overlay-recovery-ui-handoff.md](/Users/worldbuilder/Desktop/Head%20Canon/Builder/handoffs/2026-05-22-inserted-overlay-recovery-ui-handoff.md).
+- Verify disk-space readiness source/runtime alignment, then prioritize inserted-overlay re-entry hardening and the always-visible Last Transcript recovery UI.

@@ -28,6 +28,9 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Accessibility access is granted to the installed app bundle
 - [ ] After relaunch, the app itself reports both permissions accurately
 - [ ] The app does not show `Ready` while permissions are missing
+- [ ] The app does not show `Ready` while disk readiness is blocked
+- [ ] Low-disk warning copy does not hide a harder blocker such as permissions or API key setup
+- [ ] If the cache reserve feature is enabled, the app reports the reserve truthfully in live diagnostics or settings
 
 ## Backend Readiness
 - [ ] An OpenAI API key is stored
@@ -61,10 +64,12 @@ It is for proving the installed app is actually usable for real dictation before
 
 ## Persistent Diagnostics
 - [ ] Each completed or failed dictation attempt is written to a local diagnostics log
+- [ ] Pre-start readiness blocks are written to the same local diagnostics log
 - [ ] The diagnostics log survives app relaunch
 - [ ] The latest attempt can be read from the terminal without opening Settings
 - [ ] The latest attempt is also available through a fast-path artifact such as `latest.json`
 - [ ] The latest attempt includes request mode, fallback usage, status, request ID, and processing metadata
+- [ ] The latest attempt or live state includes disk readiness status and free-space context when available
 - [ ] Each record includes a schema version and session identifier
 - [ ] Default diagnostics do not retain raw transcript text
 - [ ] Diagnostics writing failure does not block dictation
@@ -144,6 +149,7 @@ It is for proving the installed app is actually usable for real dictation before
 
 ## Failure Safety
 - [ ] If setup is incomplete, the app shows a specific blocker
+- [ ] If disk space is below the hard threshold, the app blocks recording before start with actionable copy
 - [ ] If transcription fails, the app shows a clear error instead of silently doing nothing
 - [ ] If insertion fails, the transcript remains available for manual recovery
 - [ ] Dictated text is never lost silently

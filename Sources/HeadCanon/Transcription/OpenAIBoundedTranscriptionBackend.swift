@@ -120,6 +120,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             responseHeadersReceivedMS: responseHeadersReceivedMS
         )
 
+        let bodyDiagnostics = Self.responseBodyDiagnostics(from: data, response: response)
         let text: String
         do {
             text = try Self.parseStreamingTranscriptionResponse(from: data)
@@ -142,7 +143,8 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
                     responseMetadata: metadata,
                     responseHeadersReceivedMS: responseHeadersReceivedMS,
                     transportFailureStage: .readingResponseBody,
-                    networkError: nil
+                    networkError: nil,
+                    responseBodyDiagnostics: bodyDiagnostics
                 )
             )
         }
@@ -211,7 +213,8 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             responseHeadersReceivedMS: resolvedResponseHeadersReceivedMS
         )
 
-        let text = Self.parsePlainTextResponse(data)
+        let inspectedBody = Self.inspectPlainTextResponse(data, response: response)
+        let text = inspectedBody.text
         guard !text.isEmpty else {
             throw TranscriptionBackendError.invalidResponse(
                 Self.failureContext(
@@ -220,7 +223,8 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
                     responseMetadata: metadata,
                     responseHeadersReceivedMS: resolvedResponseHeadersReceivedMS,
                     transportFailureStage: .readingResponseBody,
-                    networkError: nil
+                    networkError: nil,
+                    responseBodyDiagnostics: inspectedBody.diagnostics
                 )
             )
         }
@@ -404,7 +408,8 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         responseMetadata: TranscriptionResponseMetadata? = nil,
         responseHeadersReceivedMS: Int?,
         transportFailureStage: TranscriptionTransportFailureStage?,
-        networkError: Error?
+        networkError: Error?,
+        responseBodyDiagnostics: ResponseBodyDiagnostics? = nil
     ) -> TranscriptionFailureContext {
         let resolvedHTTPResponse = httpResponse
         let resolvedMetadata = responseMetadata
@@ -422,13 +427,51 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
             transportFailureStage: transportFailureStage,
             networkErrorDomain: nsError?.domain,
             networkErrorCode: nsError?.code,
-            networkErrorCodeName: urlError.map { String(describing: $0.code) }
+            networkErrorCodeName: urlError.map { String(describing: $0.code) },
+            responseBodyByteCount: responseBodyDiagnostics?.byteCount,
+            responseBodyUTF8Decodable: responseBodyDiagnostics?.utf8Decodable,
+            responseBodyTrimmedCharacterCount: responseBodyDiagnostics?.trimmedCharacterCount,
+            responseContentLengthBytes: responseBodyDiagnostics?.contentLengthBytes
         )
     }
 
-    nonisolated private static func parsePlainTextResponse(_ data: Data) -> String {
-        String(decoding: data, as: UTF8.self)
+    nonisolated private static func inspectPlainTextResponse(
+        _ data: Data,
+        response: URLResponse
+    ) -> InspectedPlainTextResponse {
+        let diagnostics = responseBodyDiagnostics(from: data, response: response)
+        let text = String(decoding: data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return InspectedPlainTextResponse(text: text, diagnostics: diagnostics)
+    }
+
+    nonisolated private static func responseBodyDiagnostics(
+        from data: Data,
+        response: URLResponse
+    ) -> ResponseBodyDiagnostics {
+        let utf8String = String(data: data, encoding: .utf8)
+        let trimmedCharacterCount = utf8String?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .count
+
+        return ResponseBodyDiagnostics(
+            byteCount: data.count,
+            utf8Decodable: utf8String != nil,
+            trimmedCharacterCount: trimmedCharacterCount,
+            contentLengthBytes: responseContentLengthBytes(from: response)
+        )
+    }
+
+    nonisolated private static func responseContentLengthBytes(from response: URLResponse) -> Int? {
+        if response.expectedContentLength >= 0 {
+            return Int(response.expectedContentLength)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            return nil
+        }
+
+        return headerValue("content-length", from: httpResponse).flatMap(Int.init)
     }
 
     nonisolated private static func parseStreamingTranscriptionResponse(from data: Data) throws -> String {
@@ -698,6 +741,18 @@ private struct Resolution {
 private struct ParsedTranscriptionResponse {
     let text: String
     let metadata: TranscriptionResponseMetadata
+}
+
+private struct InspectedPlainTextResponse {
+    let text: String
+    let diagnostics: ResponseBodyDiagnostics
+}
+
+private struct ResponseBodyDiagnostics {
+    let byteCount: Int
+    let utf8Decodable: Bool
+    let trimmedCharacterCount: Int?
+    let contentLengthBytes: Int?
 }
 
 private struct StreamingTranscriptionEvent: Decodable {

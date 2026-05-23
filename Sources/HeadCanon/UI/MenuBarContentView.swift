@@ -30,6 +30,7 @@ struct MenuBarContentView: View {
                 permissionRow(title: "Microphone", state: model.permissionSnapshot.microphone)
                 permissionRow(title: "Accessibility", state: model.permissionSnapshot.accessibility)
                 permissionRow(title: "OpenAI Key", stateTitle: model.apiKeyState.title)
+                permissionRow(title: "Disk", stateTitle: model.diskSpaceReadiness?.status.title ?? "Unknown")
             }
 
             if !model.setupBlockers.isEmpty {
@@ -54,6 +55,20 @@ struct MenuBarContentView: View {
                 Text(runtimeWarningMessage)
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let diskSpaceWarningMessage = model.diskSpaceWarningMessage {
+                Text(diskSpaceWarningMessage)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let diskSpaceReserveSummary = model.diskSpaceReserveSummary {
+                Text(diskSpaceReserveSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -117,6 +132,8 @@ struct MenuBarContentView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
+            transcriptRecoveryPanel
+
             Divider()
 
             Button("Finalize Recording Now") {
@@ -167,7 +184,7 @@ struct MenuBarContentView: View {
             }
         }
         .padding(18)
-        .frame(width: 340)
+        .frame(width: 430)
         .onAppear {
             apiKeyDraft = ""
         }
@@ -185,5 +202,61 @@ struct MenuBarContentView: View {
                 .foregroundStyle(.secondary)
         }
         .font(.subheadline)
+    }
+
+    private var hasRetainedTranscript: Bool {
+        !(model.lastTranscript?.isEmpty ?? true)
+    }
+
+    private var recoveryTranscriptDisplayText: String {
+        if let lastTranscript = model.lastTranscript, !lastTranscript.isEmpty {
+            return lastTranscript
+        }
+
+        if model.preferences.historyRetentionMode == .neverStore {
+            return "Transcript retention is off."
+        }
+
+        return "No retained transcript yet."
+    }
+
+    private var recoveryTranscriptStatusText: String {
+        if hasRetainedTranscript {
+            return "The latest retained transcript is available to copy or paste manually."
+        }
+
+        if model.preferences.historyRetentionMode == .neverStore {
+            return "Turn on transcript retention in Settings if you want a manual recovery copy after each dictation."
+        }
+
+        return "This area will keep the next successful transcription available for manual recovery."
+    }
+
+    private var transcriptRecoveryPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Last Transcript")
+                .font(.subheadline.weight(.semibold))
+
+            Text(recoveryTranscriptStatusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ScrollView {
+                Text(recoveryTranscriptDisplayText)
+                    .font(.body)
+                    .foregroundStyle(hasRetainedTranscript ? .primary : .secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+            }
+            .frame(minHeight: 140, maxHeight: 220)
+            .padding(12)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.secondary.opacity(0.25))
+            }
+            .accessibilityIdentifier("last-transcript-recovery-text")
+        }
     }
 }

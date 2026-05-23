@@ -96,6 +96,7 @@ enum SetupBlocker: Equatable, Identifiable {
     case apiKeyInvalid(String)
     case apiKeyStoreError(String)
     case apiKeyOffline(String)
+    case diskSpaceLow(String)
 
     var id: String {
         switch self {
@@ -113,6 +114,8 @@ enum SetupBlocker: Equatable, Identifiable {
             "apiKeyStoreError"
         case .apiKeyOffline:
             "apiKeyOffline"
+        case .diskSpaceLow:
+            "diskSpaceLow"
         }
     }
 
@@ -132,6 +135,8 @@ enum SetupBlocker: Equatable, Identifiable {
             "Stored API key"
         case .apiKeyOffline:
             "Network validation"
+        case .diskSpaceLow:
+            "Disk space"
         }
     }
 
@@ -150,6 +155,8 @@ enum SetupBlocker: Equatable, Identifiable {
         case .apiKeyStoreError(let message):
             message
         case .apiKeyOffline(let message):
+            message
+        case .diskSpaceLow(let message):
             message
         }
     }
@@ -264,6 +271,10 @@ struct RecordingAttemptDiagnostics: Equatable {
     let transcriptionNetworkErrorDomain: String?
     let transcriptionNetworkErrorCode: Int?
     let transcriptionNetworkErrorCodeName: String?
+    let transcriptionResponseBodyByteCount: Int?
+    let transcriptionResponseBodyUTF8Decodable: Bool?
+    let transcriptionResponseBodyTrimmedCharacterCount: Int?
+    let transcriptionResponseContentLengthBytes: Int?
 
     var pressToRecordingStartDuration: TimeInterval? {
         elapsedTime(from: hotkeyPressedAt, to: recordingStartedAt)
@@ -318,7 +329,11 @@ struct RecordingAttemptDiagnostics: Equatable {
         transcriptionTransportFailureStage: nil,
         transcriptionNetworkErrorDomain: nil,
         transcriptionNetworkErrorCode: nil,
-        transcriptionNetworkErrorCodeName: nil
+        transcriptionNetworkErrorCodeName: nil,
+        transcriptionResponseBodyByteCount: nil,
+        transcriptionResponseBodyUTF8Decodable: nil,
+        transcriptionResponseBodyTrimmedCharacterCount: nil,
+        transcriptionResponseContentLengthBytes: nil
     )
 
     func withRecordingStarted(at timestamp: Date) -> RecordingAttemptDiagnostics {
@@ -347,7 +362,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: transcriptionResponseContentLengthBytes
         )
     }
 
@@ -377,7 +396,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: transcriptionResponseContentLengthBytes
         )
     }
 
@@ -407,7 +430,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: transcriptionResponseContentLengthBytes
         )
     }
 
@@ -437,7 +464,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: nil,
             transcriptionNetworkErrorDomain: nil,
             transcriptionNetworkErrorCode: nil,
-            transcriptionNetworkErrorCodeName: nil
+            transcriptionNetworkErrorCodeName: nil,
+            transcriptionResponseBodyByteCount: nil,
+            transcriptionResponseBodyUTF8Decodable: nil,
+            transcriptionResponseBodyTrimmedCharacterCount: nil,
+            transcriptionResponseContentLengthBytes: nil
         )
     }
 
@@ -467,7 +498,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: context?.transportFailureStage?.rawValue ?? transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: context?.networkErrorDomain ?? transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: context?.networkErrorCode ?? transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: context?.networkErrorCodeName ?? transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: context?.networkErrorCodeName ?? transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: context?.responseBodyByteCount ?? transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: context?.responseBodyUTF8Decodable ?? transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: context?.responseBodyTrimmedCharacterCount ?? transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: context?.responseContentLengthBytes ?? transcriptionResponseContentLengthBytes
         )
     }
 
@@ -497,7 +532,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: transcriptionResponseContentLengthBytes
         )
     }
 
@@ -527,7 +566,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: transcriptionResponseContentLengthBytes
         )
     }
 
@@ -557,7 +600,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: transcriptionResponseContentLengthBytes
         )
     }
 
@@ -587,7 +634,11 @@ struct RecordingAttemptDiagnostics: Equatable {
             transcriptionTransportFailureStage: transcriptionTransportFailureStage,
             transcriptionNetworkErrorDomain: transcriptionNetworkErrorDomain,
             transcriptionNetworkErrorCode: transcriptionNetworkErrorCode,
-            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName
+            transcriptionNetworkErrorCodeName: transcriptionNetworkErrorCodeName,
+            transcriptionResponseBodyByteCount: transcriptionResponseBodyByteCount,
+            transcriptionResponseBodyUTF8Decodable: transcriptionResponseBodyUTF8Decodable,
+            transcriptionResponseBodyTrimmedCharacterCount: transcriptionResponseBodyTrimmedCharacterCount,
+            transcriptionResponseContentLengthBytes: transcriptionResponseContentLengthBytes
         )
     }
 
@@ -636,6 +687,7 @@ final class HeadCanonModel {
     @ObservationIgnored private let hotkeyManager: any HotkeyManaging
     @ObservationIgnored private let statusOverlay: any StatusOverlayPresenting
     @ObservationIgnored private let clipboardWriter: any ClipboardWriting
+    @ObservationIgnored private let diskSpaceReadinessService: DiskSpaceReadinessService
 
     let preferences: AppPreferences
 
@@ -658,6 +710,7 @@ final class HeadCanonModel {
     var lastClipboardRecovery: ClipboardRecoveryState?
     var permissionDebugSnapshot: PermissionDebugSnapshot = .empty
     var permissionSelfTestResults: [PermissionSelfTestResult] = []
+    var diskSpaceReadiness: DiskSpaceReadiness?
     @ObservationIgnored private var hasPresentedSetupWindow = false
     @ObservationIgnored private var hasPresentedLaunchWindow = false
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
@@ -667,6 +720,7 @@ final class HeadCanonModel {
     @ObservationIgnored private var permissionRefreshTask: Task<Void, Never>?
     @ObservationIgnored private var recordingDurationLimitTask: Task<Void, Never>?
     @ObservationIgnored private var recordingReleaseWatchdogTask: Task<Void, Never>?
+    @ObservationIgnored private var diskReserveMaintenanceTask: Task<Void, Never>?
     @ObservationIgnored private var liveDiagnosticsPersistTask: Task<Void, Never>?
     @ObservationIgnored private var activeTranscriptionAttemptID: UUID?
     @ObservationIgnored private var currentAttemptID: UUID?
@@ -692,6 +746,9 @@ final class HeadCanonModel {
         hotkeyManager: (any HotkeyManaging)? = nil,
         statusOverlay: (any StatusOverlayPresenting)? = nil,
         clipboardWriter: (any ClipboardWriting)? = nil,
+        diskSpaceChecker: (any DiskSpaceChecking)? = nil,
+        diskSpaceReserver: (any DiskSpaceReserving)? = nil,
+        diskSpacePolicy: DiskSpacePolicy = .default,
         hotkeyStateProvider: @escaping (HotkeyShortcut) -> Bool = { $0.isPressedInCurrentSession() },
         transcriptionTimeout: Duration = .seconds(30),
         maximumRecordingDuration: Duration = .seconds(90)
@@ -709,6 +766,12 @@ final class HeadCanonModel {
         self.hotkeyManager = hotkeyManager ?? HotkeyManager()
         self.statusOverlay = statusOverlay ?? StatusOverlayController.shared
         self.clipboardWriter = clipboardWriter ?? SystemClipboardWriter()
+        self.diskSpaceReadinessService = DiskSpaceReadinessService(
+            checker: diskSpaceChecker ?? VolumeDiskSpaceChecker(),
+            reserver: diskSpaceReserver ?? DiskSpaceReserveManager(),
+            policy: diskSpacePolicy,
+            monitoredURL: AudioCaptureService.recordingsDirectoryURL
+        )
         self.hotkeyStateProvider = hotkeyStateProvider
         self.transcriptionTimeout = transcriptionTimeout
         self.maximumRecordingDuration = maximumRecordingDuration
@@ -719,7 +782,7 @@ final class HeadCanonModel {
     }
 
     var isReady: Bool {
-        permissionSnapshot.isReady && apiKeyAllowsDictation
+        permissionSnapshot.isReady && apiKeyAllowsDictation && !isDiskSpaceBlocked
     }
 
     var setupBlockers: [SetupBlocker] {
@@ -750,6 +813,10 @@ final class HeadCanonModel {
             if !apiKeyAllowsDictation {
                 blockers.append(.apiKeyValidationRequired)
             }
+        }
+
+        if let diskSpaceReadiness, let blockingMessage = diskSpaceReadiness.blockingMessage {
+            blockers.append(.diskSpaceLow(blockingMessage))
         }
 
         return blockers
@@ -785,7 +852,15 @@ final class HeadCanonModel {
             return lastErrorMessage
         }
 
-        return setupBlockers.first?.detail ?? "Head Canon is ready."
+        if let setupBlocker = setupBlockers.first {
+            return setupBlocker.detail
+        }
+
+        if let diskSpaceWarningMessage {
+            return diskSpaceWarningMessage
+        }
+
+        return "Head Canon is ready."
     }
 
     var checkpointSummary: String {
@@ -799,6 +874,10 @@ final class HeadCanonModel {
 
         if !permissionSnapshot.accessibility.isGranted {
             return "Blocked on Accessibility access."
+        }
+
+        if let blockingMessage = diskSpaceReadiness?.blockingMessage {
+            return blockingMessage
         }
 
         if workflowStatus == .inserted, let lastAttemptTruthState {
@@ -816,6 +895,10 @@ final class HeadCanonModel {
             return message
         case .valid:
             break
+        }
+
+        if let diskSpaceWarningMessage {
+            return diskSpaceWarningMessage
         }
 
         if isReady && !workflowStatus.blocksNewDictation && workflowStatus != .failed && workflowStatus != .inserted {
@@ -859,6 +942,10 @@ final class HeadCanonModel {
             "Next action: \(permissionDebugSnapshot.diagnosis.nextAction)",
             "Last permission refresh: \(permissionDebugSnapshot.lastPermissionRefreshDate?.formatted(date: .abbreviated, time: .standard) ?? "Never")",
             "Last self-test run: \(permissionDebugSnapshot.lastSelfTestDate?.formatted(date: .abbreviated, time: .standard) ?? "Never")",
+            "Disk readiness: \(diskSpaceReadiness?.status.title ?? "Unknown")",
+            "Disk free space: \(diskSpaceReadiness?.freeSpaceLabel ?? "Unknown")",
+            "Disk reserve: \(diskSpaceReadiness?.reservation.status.title ?? "Unknown")",
+            "Disk reserved space: \(diskSpaceReadiness?.reservation.reservedSpaceLabel ?? "Unknown")",
             "Last failure stage: \(lastFailureStage?.title ?? "None")",
             "Last truth state: \(lastAttemptTruthState?.title ?? "None")",
             "Last event: \(lastDiagnosticEvent?.summary ?? "None")",
@@ -921,6 +1008,10 @@ final class HeadCanonModel {
             "- Network error domain: \(report.transcriptionNetworkErrorDomain ?? "Unknown")",
             "- Network error code: \(formattedCount(report.transcriptionNetworkErrorCode))",
             "- Network error code name: \(report.transcriptionNetworkErrorCodeName ?? "Unknown")",
+            "- Response body bytes: \(formattedCount(report.transcriptionResponseBodyByteCount))",
+            "- Response body UTF-8 decodable: \(formattedBool(report.transcriptionResponseBodyUTF8Decodable))",
+            "- Response body trimmed characters: \(formattedCount(report.transcriptionResponseBodyTrimmedCharacterCount))",
+            "- Response content length: \(formattedCount(report.transcriptionResponseContentLengthBytes))",
         ]
     }
 
@@ -1017,6 +1108,22 @@ final class HeadCanonModel {
         return "This copy is running outside /Applications. Open /Applications/HeadCanon.app so macOS can keep Microphone and Accessibility approvals attached to one installed app bundle."
     }
 
+    var diskSpaceWarningMessage: String? {
+        diskSpaceReadiness?.warningMessage
+    }
+
+    var diskSpaceReserveSummary: String? {
+        guard let diskSpaceReadiness else {
+            return nil
+        }
+
+        return diskSpaceReadiness.reservation.detail
+    }
+
+    private var isDiskSpaceBlocked: Bool {
+        diskSpaceReadiness?.status == .blocked
+    }
+
     var shouldRetainTranscript: Bool {
         preferences.historyRetentionMode != .neverStore
     }
@@ -1065,6 +1172,7 @@ final class HeadCanonModel {
         await refreshRuntimeStatus(validateAPIKeyRemotely: false, presentSetupWindow: false)
         registerHotkey()
         recalculateWorkflowStatus()
+        scheduleDiskReserveMaintenanceIfNeeded()
         presentLaunchWindowIfNeeded()
         if !isReady {
             presentSetupWindowIfNeeded(force: true)
@@ -1092,10 +1200,12 @@ final class HeadCanonModel {
 
         refreshPermissions()
         refreshMicrophones()
+        refreshDiskSpaceReadiness()
         await refreshAPIKeyState(
             validateRemotely: validateAPIKeyRemotely,
             presentSetupWindow: presentSetupWindow
         )
+        recalculateWorkflowStatus()
     }
 
     func refreshPermissions() {
@@ -1329,12 +1439,7 @@ final class HeadCanonModel {
             return
         }
 
-        lastRecordingAttemptDiagnostics = .empty
-        currentAttemptID = UUID()
-        lastCapturedInsertionReport = nil
-        lastInsertionAttemptReport = nil
-        lastClipboardRecovery = nil
-        lastAttemptTruthState = nil
+        beginAttempt(at: nil)
 
         Task {
             @MainActor in
@@ -1726,14 +1831,42 @@ final class HeadCanonModel {
     private func handleHotkeyPressed() {
         let now = Date()
         recordDiagnosticEvent("Observed hotkey press.", stage: .hotkey, isFailure: false)
+        cancelDiskReserveMaintenance()
+
+        releaseDiskReserveForRecordingIfNeeded()
+
+        refreshDiskSpaceReadiness()
+
+        if let blockingMessage = diskSpaceReadiness?.blockingMessage {
+            beginAttempt(at: now)
+            lastAttemptTruthState = .systemReadinessBlocked
+            recordFailure(.permissionReadiness, message: blockingMessage)
+            persistCurrentAttempt(
+                terminalState: .failed,
+                truthState: .systemReadinessBlocked,
+                failureStage: .permissionReadiness,
+                failureMessage: blockingMessage
+            )
+            setWorkflowStatus(.setupRequired, errorMessage: blockingMessage)
+            presentSetupWindowIfNeeded(force: true)
+            return
+        }
 
         guard isReady else {
-            lastAttemptTruthState = .setupBlocked
+            beginAttempt(at: now)
+            lastAttemptTruthState = .systemReadinessBlocked
+            let message = setupBlockers.first?.detail ?? "Head Canon is not ready for dictation yet."
             recordFailure(
                 .permissionReadiness,
-                message: setupBlockers.first?.detail ?? "Head Canon is not ready for dictation yet."
+                message: message
             )
-            setWorkflowStatus(.setupRequired, errorMessage: setupBlockers.first?.detail)
+            persistCurrentAttempt(
+                terminalState: .failed,
+                truthState: .systemReadinessBlocked,
+                failureStage: .permissionReadiness,
+                failureMessage: message
+            )
+            setWorkflowStatus(.setupRequired, errorMessage: message)
             presentSetupWindowIfNeeded(force: true)
             return
         }
@@ -1752,36 +1885,7 @@ final class HeadCanonModel {
             return
         }
 
-        lastRecordingAttemptDiagnostics = RecordingAttemptDiagnostics(
-            hotkeyPressedAt: now,
-            recordingStartedAt: nil,
-            hotkeyReleasedAt: nil,
-            finalizingStateShownAt: nil,
-            recordingFinalizedAt: nil,
-            transcriptionRequestStartedAt: nil,
-            transcriptionResponseCompletedAt: nil,
-            insertionCompletedAt: nil,
-            stopTrigger: nil,
-            clipDuration: nil,
-            recordedFileSizeBytes: nil,
-            transcriptCharacterCount: nil,
-            transcriptWordCount: nil,
-            transcriptionBackendID: nil,
-            transcriptionRequestMode: nil,
-            transcriptionFellBackFromStreaming: nil,
-            transcriptionHTTPStatusCode: nil,
-            transcriptionRequestID: nil,
-            transcriptionProcessingMS: nil,
-            transcriptionResponseContentType: nil,
-            transcriptionResponseHeadersReceivedMS: nil,
-            transcriptionTransportFailureStage: nil,
-            transcriptionNetworkErrorDomain: nil,
-            transcriptionNetworkErrorCode: nil,
-            transcriptionNetworkErrorCodeName: nil
-        )
-        currentAttemptID = UUID()
-        lastClipboardRecovery = nil
-        lastAttemptTruthState = nil
+        beginAttempt(at: now)
 
         do {
             try audioCaptureService.startRecording(preferredDeviceID: preferences.selectedMicrophoneID)
@@ -1791,15 +1895,16 @@ final class HeadCanonModel {
             startRecordingReleaseWatchdog()
             startRecordingDurationLimit()
         } catch {
+            let message = actionableRecordingFailureMessage(for: error)
             lastAttemptTruthState = .recordingFailed
-            recordFailure(.recordingStart, message: error.localizedDescription)
+            recordFailure(.recordingStart, message: message)
             persistCurrentAttempt(
                 terminalState: .failed,
                 truthState: .recordingFailed,
                 failureStage: .recordingStart,
-                failureMessage: error.localizedDescription
+                failureMessage: message
             )
-            setWorkflowStatus(.failed, errorMessage: error.localizedDescription)
+            setWorkflowStatus(.failed, errorMessage: userFacingRecordingFailureMessage(for: error))
         }
     }
 
@@ -1850,15 +1955,16 @@ final class HeadCanonModel {
             do {
                 input = try await audioCaptureService.stopRecording()
             } catch {
+                let message = actionableRecordingFailureMessage(for: error)
                 lastAttemptTruthState = .recordingFailed
-                recordFailure(.recordingStop, message: error.localizedDescription)
+                recordFailure(.recordingStop, message: message)
                 persistCurrentAttempt(
                     terminalState: .failed,
                     truthState: .recordingFailed,
                     failureStage: .recordingStop,
-                    failureMessage: error.localizedDescription
+                    failureMessage: message
                 )
-                setWorkflowStatus(.failed, errorMessage: error.localizedDescription)
+                setWorkflowStatus(.failed, errorMessage: userFacingRecordingFailureMessage(for: error))
                 return
             }
 
@@ -2223,11 +2329,119 @@ final class HeadCanonModel {
             return
         }
 
-        if !permissionSnapshot.isReady || !apiKeyAllowsDictation {
+        if !permissionSnapshot.isReady || !apiKeyAllowsDictation || isDiskSpaceBlocked {
             setWorkflowStatus(.setupRequired)
         } else {
             setWorkflowStatus(.ready)
         }
+    }
+
+    private func beginAttempt(at hotkeyPressedAt: Date?) {
+        lastRecordingAttemptDiagnostics = hotkeyPressedAt.map { recordingAttemptDiagnostics(hotkeyPressedAt: $0) } ?? .empty
+        currentAttemptID = UUID()
+        lastCapturedInsertionReport = nil
+        lastInsertionAttemptReport = nil
+        lastClipboardRecovery = nil
+        lastAttemptTruthState = nil
+    }
+
+    private func recordingAttemptDiagnostics(hotkeyPressedAt: Date) -> RecordingAttemptDiagnostics {
+        RecordingAttemptDiagnostics(
+            hotkeyPressedAt: hotkeyPressedAt,
+            recordingStartedAt: nil,
+            hotkeyReleasedAt: nil,
+            finalizingStateShownAt: nil,
+            recordingFinalizedAt: nil,
+            transcriptionRequestStartedAt: nil,
+            transcriptionResponseCompletedAt: nil,
+            insertionCompletedAt: nil,
+            stopTrigger: nil,
+            clipDuration: nil,
+            recordedFileSizeBytes: nil,
+            transcriptCharacterCount: nil,
+            transcriptWordCount: nil,
+            transcriptionBackendID: nil,
+            transcriptionRequestMode: nil,
+            transcriptionFellBackFromStreaming: nil,
+            transcriptionHTTPStatusCode: nil,
+            transcriptionRequestID: nil,
+            transcriptionProcessingMS: nil,
+            transcriptionResponseContentType: nil,
+            transcriptionResponseHeadersReceivedMS: nil,
+            transcriptionTransportFailureStage: nil,
+            transcriptionNetworkErrorDomain: nil,
+            transcriptionNetworkErrorCode: nil,
+            transcriptionNetworkErrorCodeName: nil,
+            transcriptionResponseBodyByteCount: nil,
+            transcriptionResponseBodyUTF8Decodable: nil,
+            transcriptionResponseBodyTrimmedCharacterCount: nil,
+            transcriptionResponseContentLengthBytes: nil
+        )
+    }
+
+    private func refreshDiskSpaceReadiness() {
+        do {
+            diskSpaceReadiness = try diskSpaceReadinessService.currentReadiness()
+        } catch {
+            logger.error("Failed to refresh disk readiness: \(error.localizedDescription, privacy: .public)")
+            diskSpaceReadiness = nil
+        }
+    }
+
+    private func releaseDiskReserveForRecordingIfNeeded() {
+        guard let diskSpaceReadiness else {
+            return
+        }
+
+        guard
+            diskSpaceReadiness.reclaimableReserveBytes > 0,
+            diskSpaceReadiness.freeBytes < diskSpaceReadinessService.policy.minimumRecordingBytes
+        else {
+            return
+        }
+
+        let releasedReserveLabel = diskSpaceReadiness.reservation.reservedSpaceLabel
+        do {
+            let updatedReadiness = try diskSpaceReadinessService.releaseReserve()
+            self.diskSpaceReadiness = updatedReadiness
+            recordDiagnosticEvent(
+                "Released \(releasedReserveLabel) of reserved Head Canon cache space before recording because free disk space had fallen too low.",
+                stage: .recordingStart,
+                isFailure: false
+            )
+        } catch {
+            logger.error("Failed to release disk reserve before recording: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func scheduleDiskReserveMaintenanceIfNeeded() {
+        guard !workflowStatus.blocksNewDictation else {
+            return
+        }
+
+        cancelDiskReserveMaintenance()
+
+        let service = diskSpaceReadinessService
+        let logger = logger
+        diskReserveMaintenanceTask = Task { [weak self] in
+            do {
+                let updatedReadiness = try await Task.detached(priority: .utility) {
+                    try service.ensureReserve()
+                }.value
+                guard let self else {
+                    return
+                }
+                self.diskSpaceReadiness = updatedReadiness
+                self.persistLiveState()
+            } catch {
+                logger.error("Failed to maintain disk reserve: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+
+    private func cancelDiskReserveMaintenance() {
+        diskReserveMaintenanceTask?.cancel()
+        diskReserveMaintenanceTask = nil
     }
 
     private func presentSetupWindowIfNeeded() {
@@ -2271,6 +2485,9 @@ final class HeadCanonModel {
         lastErrorMessage = errorMessage
         statusOverlay.update(status: status, detail: overlayDetail(for: status, errorMessage: errorMessage))
         persistLiveState()
+        if !status.blocksNewDictation {
+            scheduleDiskReserveMaintenanceIfNeeded()
+        }
     }
 
     private func startRecordingReleaseWatchdog() {
@@ -2423,6 +2640,10 @@ final class HeadCanonModel {
             workflowStatus: workflowStatus.rawValue,
             workflowStatusTitle: workflowStatus.title,
             isReady: isReady,
+            diskReadinessStatus: diskSpaceReadiness?.status.title,
+            diskFreeSpace: diskSpaceReadiness?.freeSpaceLabel,
+            diskReserveStatus: diskSpaceReadiness?.reservation.status.title,
+            diskReservedSpace: diskSpaceReadiness?.reservation.reservedSpaceLabel,
             audioCaptureIsRecording: audioCaptureService.isRecording,
             hotkeyDisplayString: preferences.hotkey.displayString,
             hotkeyPhysicallyPressed: hotkeyStateProvider(preferences.hotkey),
@@ -2532,7 +2753,11 @@ final class HeadCanonModel {
                 transportFailureStage: metrics.transcriptionTransportFailureStage,
                 networkErrorDomain: metrics.transcriptionNetworkErrorDomain,
                 networkErrorCode: metrics.transcriptionNetworkErrorCode,
-                networkErrorCodeName: metrics.transcriptionNetworkErrorCodeName
+                networkErrorCodeName: metrics.transcriptionNetworkErrorCodeName,
+                responseBodyByteCount: metrics.transcriptionResponseBodyByteCount,
+                responseBodyUTF8Decodable: metrics.transcriptionResponseBodyUTF8Decodable,
+                responseBodyTrimmedCharacterCount: metrics.transcriptionResponseBodyTrimmedCharacterCount,
+                responseContentLengthBytes: metrics.transcriptionResponseContentLengthBytes
             ),
             releaseTimeInsertion: releaseTimeInsertionReport.map { report in
                 DictationAttemptInsertionRecord(
@@ -2715,6 +2940,51 @@ final class HeadCanonModel {
         case .focusUnavailable, .accessibilityAPIError, .pasteFailed, .pasteDeliveryUnconfirmed:
             return DictationAttemptTruthState.insertionFailed
         }
+    }
+
+    private func userFacingRecordingFailureMessage(for error: Error) -> String {
+        if isDiskSpaceError(error) {
+            return diskSpaceReadiness?.blockingMessage
+                ?? "Head Canon needs at least \(diskSpaceReadinessService.policy.minimumRecordingLabel) free to record safely. Free up disk space and try again."
+        }
+
+        return error.localizedDescription
+    }
+
+    private func actionableRecordingFailureMessage(for error: Error) -> String {
+        let userFacingMessage = userFacingRecordingFailureMessage(for: error)
+        let underlyingMessage = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard
+            !underlyingMessage.isEmpty,
+            underlyingMessage.caseInsensitiveCompare(userFacingMessage) != .orderedSame
+        else {
+            return userFacingMessage
+        }
+
+        return "\(userFacingMessage) Underlying recording error: \(underlyingMessage)"
+    }
+
+    private func isDiskSpaceError(_ error: Error) -> Bool {
+        if let audioCaptureError = error as? AudioCaptureError,
+           case .finalizationFailed(let message) = audioCaptureError
+        {
+            return isDiskSpaceErrorMessage(message)
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileWriteOutOfSpaceError {
+            return true
+        }
+
+        return isDiskSpaceErrorMessage(error.localizedDescription)
+    }
+
+    private func isDiskSpaceErrorMessage(_ message: String) -> Bool {
+        let normalizedMessage = message.lowercased()
+        return normalizedMessage.contains("disk full")
+            || normalizedMessage.contains("out of space")
+            || normalizedMessage.contains("no space left")
     }
 
     private func insertionSuccessMessage(

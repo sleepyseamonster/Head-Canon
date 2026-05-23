@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_PATH="${1:-$ROOT_DIR/dist/HeadCanon.app}"
 EXPECTED_IDENTITY="${HEAD_CANON_EXPECTED_SIGNING_IDENTITY:-${HEAD_CANON_CODESIGN_IDENTITY:-}}"
 EXPECTED_TEAM_ID="${HEAD_CANON_EXPECTED_TEAM_ID:-}"
+LOCAL_SIGNING_IDENTITY="${HEAD_CANON_LOCAL_CODESIGN_IDENTITY:-HeadCanon Local Signing}"
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "Missing app bundle at $APP_PATH" >&2
@@ -55,6 +56,12 @@ codesign --verify --deep --strict "$APP_PATH"
 echo
 echo "== Gatekeeper assessment =="
 if ! spctl -a -vv "$APP_PATH"; then
+  if [[ "$ACTUAL_IDENTITY" == "$LOCAL_SIGNING_IDENTITY" ]]; then
+    echo "Gatekeeper rejected the local self-signed build, which is expected for $LOCAL_SIGNING_IDENTITY." >&2
+    echo "Continuing because codesign verification passed and the signer identity matched." >&2
+    exit 0
+  fi
+
   echo "Gatekeeper rejected this build." >&2
   exit 1
 fi

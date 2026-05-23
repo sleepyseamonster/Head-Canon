@@ -30,6 +30,8 @@ Already landed:
 - reduced paste-path fixed wait versus the earlier `900ms` hold
 - persistent local diagnostics under `~/Library/Application Support/HeadCanon/diagnostics/`
 - repo-local diagnostics reader at `Scripts/diagnostics.swift`
+- disk readiness thresholds, warning copy, and pre-start blocking before recording begins
+- a reclaimable cache-space reserve so the installed app can keep a recording buffer on disk
 
 Current measured evidence from the installed app:
 
@@ -119,6 +121,9 @@ Every performance or hardening change must preserve all of the following:
 - failure recovery still works through last transcript or manual paste
 - diagnostics writing failure never blocks dictation
 - default logs do not retain raw transcript text
+- the app never shows `Ready` while disk readiness is blocked
+- warning-only low disk never hides a harder setup blocker
+- pre-start readiness blocks persist to diagnostics instead of disappearing from history
 
 If a change regresses one of these, revert to the locked baseline before continuing.
 
@@ -160,6 +165,7 @@ Pass:
 - the current bounded path has a truthful before/after baseline
 - `Codex` and non-`Codex` behavior are no longer being inferred from anecdotes or model-only aggregates
 - one known-good benchmark snapshot is recorded before any hardening or model switch
+- each checkpoint includes the installed app's current disk readiness and free-space context
 
 ## Phase 3: Timeout Cancellation
 Question:

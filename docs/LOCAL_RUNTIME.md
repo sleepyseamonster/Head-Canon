@@ -50,3 +50,5 @@ Trusted build verification now also requires an expected signer:
 
 - `HEAD_CANON_EXPECTED_SIGNING_IDENTITY="HeadCanon Local Signing" ./Scripts/verify_dist_app.sh`
 - or `HEAD_CANON_EXPECTED_TEAM_ID="<TEAMID>" ./Scripts/verify_dist_app.sh`
+
+When the expected signer is the local self-signed `HeadCanon Local Signing` identity, `verify_dist_app.sh` treats a matching `codesign` identity plus a passing `codesign --verify` result as sufficient for local runtime checks even though Gatekeeper will still reject that build.

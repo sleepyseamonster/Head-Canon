@@ -16,6 +16,7 @@ struct SettingsRootView: View {
                 if let lastErrorMessage = model.lastErrorMessage, !lastErrorMessage.isEmpty {
                     errorPanel(lastErrorMessage)
                 }
+                recoveryTranscriptPanel
                 settingsForm
                 setupHelp
                 diagnosticsPanel
@@ -176,6 +177,38 @@ struct SettingsRootView: View {
                 .padding(.top, 6)
             }
 
+            GroupBox("System Readiness") {
+                VStack(alignment: .leading, spacing: 12) {
+                    diagnosticsFact("Microphone", model.permissionSnapshot.microphone.title)
+                    diagnosticsFact("Accessibility", model.permissionSnapshot.accessibility.title)
+                    diagnosticsFact("OpenAI Key", model.apiKeyState.title)
+                    diagnosticsFact("Disk", model.diskSpaceReadiness?.status.title ?? "Unknown")
+                    diagnosticsFact("Free Space", model.diskSpaceReadiness?.freeSpaceLabel ?? "Unknown")
+                    diagnosticsFact("Reserve", model.diskSpaceReadiness?.reservation.status.title ?? "Unknown")
+                    diagnosticsFact("Reserved Space", model.diskSpaceReadiness?.reservation.reservedSpaceLabel ?? "Unknown")
+
+                    if let diskSpaceWarningMessage = model.diskSpaceWarningMessage {
+                        Text(diskSpaceWarningMessage)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else if let blockingMessage = model.diskSpaceReadiness?.blockingMessage {
+                        Text(blockingMessage)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    if let diskSpaceReserveSummary = model.diskSpaceReserveSummary {
+                        Text(diskSpaceReserveSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.top, 6)
+            }
+
             GroupBox("App Identity") {
                 VStack(alignment: .leading, spacing: 12) {
                     if let runtimeWarningMessage = model.runtimeWarningMessage {
@@ -246,21 +279,6 @@ struct SettingsRootView: View {
                         )
                     )
 
-                    if let lastTranscript = model.lastTranscript, !lastTranscript.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Last Transcript")
-                                .font(.headline)
-                            Text("If an opaque app reports an unverified insert, paste or copy this transcript for manual recovery.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Text(lastTranscript)
-                                .font(.callout)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
-                        .padding(.top, 4)
-                    }
-
                     HStack {
                         Button("Paste Last Transcript") {
                             model.pasteLastTranscript()
@@ -280,6 +298,94 @@ struct SettingsRootView: View {
                 }
                 .padding(.top, 6)
             }
+        }
+    }
+
+    private var hasRetainedTranscript: Bool {
+        !(model.lastTranscript?.isEmpty ?? true)
+    }
+
+    private var recoveryTranscriptDisplayText: String {
+        if let lastTranscript = model.lastTranscript, !lastTranscript.isEmpty {
+            return lastTranscript
+        }
+
+        if model.preferences.historyRetentionMode == .neverStore {
+            return "Transcript retention is off."
+        }
+
+        return "No retained transcript yet."
+    }
+
+    private var recoveryTranscriptStatusText: String {
+        if hasRetainedTranscript {
+            return "The latest retained transcript is available to copy or paste manually."
+        }
+
+        if model.preferences.historyRetentionMode == .neverStore {
+            return "Turn on transcript retention if you want a manual recovery copy after each dictation."
+        }
+
+        return "This area stays visible so the recovery path is predictable. The next successful transcription will appear here."
+    }
+
+    private var recoveryTranscriptPanel: some View {
+        GroupBox("Last Transcript") {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    Text(recoveryTranscriptStatusText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 12)
+
+                    Button {
+                        model.copyLastTranscript()
+                    } label: {
+                        Label("Copy Transcript", systemImage: "doc.on.doc.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.lastTranscript?.isEmpty ?? true)
+                }
+
+                ScrollView {
+                    Text(recoveryTranscriptDisplayText)
+                        .font(.body)
+                        .foregroundStyle(hasRetainedTranscript ? .primary : .secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .frame(minHeight: 220, maxHeight: 320)
+                .padding(14)
+                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color.secondary.opacity(0.25))
+                }
+                .accessibilityIdentifier("last-transcript-recovery-text")
+
+                HStack {
+                    Button("Paste Last Transcript") {
+                        model.pasteLastTranscript()
+                    }
+                    .disabled(model.lastTranscript?.isEmpty ?? true)
+
+                    Button("Copy Last Transcript") {
+                        model.copyLastTranscript()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.lastTranscript?.isEmpty ?? true)
+
+                    Button("Clear Last Transcript") {
+                        model.clearLastTranscript()
+                    }
+                    .disabled(model.lastTranscript?.isEmpty ?? true)
+
+                    Spacer()
+                }
+            }
+            .padding(.top, 6)
         }
     }
 
@@ -383,6 +489,10 @@ struct SettingsRootView: View {
                     diagnosticsFact("Installed Bundle", model.permissionDebugSnapshot.isInstalledBundle ? "Yes" : "No")
                     diagnosticsFact("Microphone", model.permissionDebugSnapshot.microphoneState.title)
                     diagnosticsFact("Accessibility", model.permissionDebugSnapshot.accessibilityState.title)
+                    diagnosticsFact("Disk", model.diskSpaceReadiness?.status.title ?? "Unknown")
+                    diagnosticsFact("Free Space", model.diskSpaceReadiness?.freeSpaceLabel ?? "Unknown")
+                    diagnosticsFact("Reserve", model.diskSpaceReadiness?.reservation.status.title ?? "Unknown")
+                    diagnosticsFact("Reserved Space", model.diskSpaceReadiness?.reservation.reservedSpaceLabel ?? "Unknown")
                     diagnosticsFact("AX Trust Check", model.permissionDebugSnapshot.accessibilityTrusted ? "True" : "False")
                     diagnosticsFact("Accessibility Prompted", model.permissionDebugSnapshot.accessibilityPrompted ? "Yes" : "No")
                     diagnosticsFact("Relaunch Requested", model.permissionDebugSnapshot.accessibilityRelaunchRequested ? "Yes" : "No")

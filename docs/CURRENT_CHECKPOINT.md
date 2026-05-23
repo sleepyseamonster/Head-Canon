@@ -25,6 +25,8 @@ What exists now:
 - release-time and insert-time insertion routing reports
 - persistent local diagnostics under `~/Library/Application Support/HeadCanon/diagnostics/`
 - repo-local diagnostics reader at `Scripts/diagnostics.swift`
+- disk readiness checks with warning and hard-block thresholds
+- a reclaimable Head Canon cache reserve under `~/Library/Caches/HeadCanon/`
 - manual recovery through `pasteLastTranscript()`
 - manual recovery through `Copy Last Transcript`
 - one guarded retry for transient transport failures
@@ -67,6 +69,8 @@ What the latest installed-app evidence says:
 5. `rollback discipline still implicit`
    - the docs need to keep treating the current bounded baseline as a known-good snapshot
    - any retry, model, or architecture experiment should be able to fall back to that state cleanly
+6. `installed-app disk-readiness verification still pending`
+   - the repo now blocks low-disk starts and surfaces warnings, but the next installed-app pass should explicitly verify those states from `/Applications/HeadCanon.app`
 
 ## Rules For The Next Pass
 1. Test only `/Applications/HeadCanon.app`.
@@ -85,6 +89,10 @@ What the latest installed-app evidence says:
    - `insertion context`
    - `insertion transport`
    - `safety policy block`
+8. Record disk readiness for each installed-app checkpoint:
+   - current free space
+   - whether the app reported `Healthy`, `Low`, or `Blocked`
+   - whether a pre-start block persisted to diagnostics cleanly when exercised
 
 ## Immediate Next Steps
 1. Lock the current bounded baseline:
@@ -120,6 +128,7 @@ The next checkpoint should include:
 - one clear bounded baseline definition
 - one explicit result for the timeout-cancellation fix
 - one explicit result for the `Codex` focus-drift fix
+- one explicit installed-app disk-readiness result with diagnostics evidence
 - one longer run summary by app class
 - `p50`, `p95`, and failure rate from the persistent diagnostics log
 - one note on whether transcript quality stayed acceptable

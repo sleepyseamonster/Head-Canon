@@ -93,6 +93,34 @@ struct HeadCanonTests {
         #expect(model.statusSummary == SetupBlocker.microphone.detail)
     }
 
+    @Test("Low-disk warning does not hide a real setup blocker in the summary")
+    @MainActor
+    func diskWarningDoesNotHideSetupBlocker() async {
+        let model = HeadCanonModel(
+            permissionsManager: StubPermissionsManager(
+                snapshot: PermissionSnapshot(
+                    microphone: .denied,
+                    accessibility: .granted
+                )
+            ),
+            audioCaptureService: StubAudioCaptureService(),
+            transcriptionBackend: StubTranscriptionBackend(),
+            textInsertionService: StubTextInsertionService(),
+            apiKeyStore: StubAPIKeyStore(apiKey: "test-key"),
+            diagnosticsStore: NoOpDiagnosticsStore(),
+            hotkeyManager: StubHotkeyManager(),
+            diskSpaceChecker: StubDiskSpaceChecker(
+                freeBytes: DiskSpacePolicy.gibibytes(5)
+            )
+        )
+
+        await model.refreshRuntimeStatus(validateAPIKeyRemotely: false, presentSetupWindow: false)
+        model.apiKeyState = .valid
+
+        #expect(model.diskSpaceReadiness?.status == .warning)
+        #expect(model.statusSummary == SetupBlocker.microphone.detail)
+    }
+
     @Test("Pending Accessibility approval still blocks readiness without showing granted")
     @MainActor
     func pendingAccessibilityStillBlocksReadiness() async {
@@ -263,6 +291,42 @@ struct HeadCanonTranscriptionBackendTests {
         #expect(capturedRequest?.bodyString.contains("text") == true)
         #expect(capturedRequest?.bodyString.contains("name=\"stream\"") == false)
         #expect(StandardTranscriptionURLProtocol.capturedRequests().count == 1)
+    }
+
+    @Test("Empty bounded transcription body records body diagnostics")
+    @MainActor
+    func emptyBoundedTranscriptionBodyRecordsBodyDiagnostics() async throws {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headcanon-transcription-empty-body-\(UUID().uuidString)")
+            .appendingPathExtension("m4a")
+        try Data("fake audio".utf8).write(to: fileURL)
+        defer {
+            try? FileManager.default.removeItem(at: fileURL)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [EmptyBodyTranscriptionURLProtocol.self]
+        let backend = OpenAIBoundedTranscriptionBackend(
+            modelProvider: { .gpt4oMiniTranscribe },
+            session: URLSession(configuration: configuration)
+        )
+
+        do {
+            _ = try await backend.transcribe(
+                BoundedAudioInput(fileURL: fileURL, mimeType: "audio/m4a", duration: 1.0),
+                apiKey: "test-key"
+            )
+            Issue.record("Expected the backend to reject the empty response body.")
+        } catch let TranscriptionBackendError.invalidResponse(context) {
+            #expect(context?.httpStatusCode == 200)
+            #expect(context?.transportFailureStage == .readingResponseBody)
+            #expect(context?.responseBodyByteCount == 0)
+            #expect(context?.responseBodyUTF8Decodable == true)
+            #expect(context?.responseBodyTrimmedCharacterCount == 0)
+            #expect(context?.responseContentLengthBytes == 0)
+        } catch {
+            Issue.record("Expected invalidResponse, received \(String(describing: error)).")
+        }
     }
 
     @Test("Canceling bounded transcription cancels the in-flight URLSession task")
@@ -577,6 +641,182 @@ struct HeadCanonSecurityTests {
         #expect(textInsertionService.insertedTexts == ["secret"])
     }
 
+    @Test("Low disk below the hard threshold blocks recording before it starts")
+    @MainActor
+    func lowDiskBlocksRecordingBeforeStart() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager,
+            diskSpaceChecker: StubDiskSpaceChecker(
+                freeBytes: DiskSpacePolicy.gibibytes(1)
+            )
+        )
+
+        await model.bootstrap()
+        #expect(model.workflowStatus == .setupRequired)
+        #expect(!model.isReady)
+        hotkeyManager.press()
+
+        for _ in 0..<20 {
+            if model.lastAttemptTruthState == .systemReadinessBlocked {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(audioCaptureService.startCallCount == 0)
+        #expect(model.workflowStatus == .setupRequired)
+        #expect(model.lastFailureStage == .permissionReadiness)
+        #expect(model.lastAttemptTruthState == .systemReadinessBlocked)
+        #expect(model.lastErrorMessage == "Head Canon needs at least 2 GB free to record safely. Free up disk space and try again.")
+        #expect(model.setupBlockers.contains { blocker in
+            if case .diskSpaceLow = blocker {
+                return true
+            }
+            return false
+        })
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.count == 1)
+        #expect(persistedRecords.first?.truthState == .systemReadinessBlocked)
+        #expect(persistedRecords.first?.failure?.stage == DiagnosticFailureStage.permissionReadiness.rawValue)
+
+        let liveState = await diagnosticsStore.waitForLiveState { record in
+            record.workflowStatus == WorkflowStatus.setupRequired.rawValue
+                && record.lastFailureStage == DiagnosticFailureStage.permissionReadiness.rawValue
+                && record.lastTruthState == DictationAttemptTruthState.systemReadinessBlocked.rawValue
+        }
+        #expect(liveState?.diskReadinessStatus == DiskSpaceStatus.blocked.title)
+    }
+
+    @Test("Low disk warning does not block recording")
+    @MainActor
+    func lowDiskWarningDoesNotBlockRecording() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let textInsertionService = RecordingTextInsertionService()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            transcriptionBackend: StubTranscriptionBackend(transcript: "warning"),
+            textInsertionService: textInsertionService,
+            hotkeyManager: hotkeyManager,
+            diskSpaceChecker: StubDiskSpaceChecker(
+                freeBytes: DiskSpacePolicy.gibibytes(5)
+            )
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(audioCaptureService.startCallCount == 1)
+        #expect(model.workflowStatus == .inserted)
+        #expect(model.diskSpaceReadiness?.status == .warning)
+        #expect(model.diskSpaceWarningMessage?.contains("Disk space is low") == true)
+        #expect(textInsertionService.insertedTexts == ["warning"])
+    }
+
+    @Test("Head Canon reserve keeps readiness healthy when cache space is reclaimable")
+    func diskReserveContributesToReadiness() throws {
+        let checker = StubDiskSpaceChecker(
+            freeBytes: DiskSpacePolicy.gibibytes(1)
+        )
+        let reserver = StubDiskSpaceReserver(
+            reservedBytes: DiskSpacePolicy.gibibytes(2),
+            targetBytes: DiskSpacePolicy.gibibytes(2),
+            minimumRemainingFreeBytes: DiskSpacePolicy.gibibytes(10)
+        )
+        let service = DiskSpaceReadinessService(
+            checker: checker,
+            reserver: reserver,
+            policy: .default,
+            monitoredURL: FileManager.default.temporaryDirectory
+        )
+
+        let readiness = try service.currentReadiness()
+
+        #expect(readiness.freeBytes == DiskSpacePolicy.gibibytes(1))
+        #expect(readiness.reclaimableReserveBytes == DiskSpacePolicy.gibibytes(2))
+        #expect(readiness.effectiveAvailableBytes == DiskSpacePolicy.gibibytes(3))
+        #expect(readiness.status == .warning)
+        #expect(readiness.warningMessage?.contains("reclaim") == true)
+    }
+
+    @Test("Low actual free space releases the Head Canon reserve before recording starts")
+    @MainActor
+    func lowActualFreeSpaceReleasesReserveBeforeRecording() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        let checker = MutableDiskSpaceChecker(
+            freeBytes: DiskSpacePolicy.gibibytes(1)
+        )
+        let reserver = StubDiskSpaceReserver(
+            reservedBytes: DiskSpacePolicy.gibibytes(2),
+            targetBytes: DiskSpacePolicy.gibibytes(2),
+            minimumRemainingFreeBytes: DiskSpacePolicy.gibibytes(10),
+            checker: checker
+        )
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            hotkeyManager: hotkeyManager,
+            diskSpaceChecker: checker,
+            diskSpaceReserver: reserver
+        )
+
+        await model.bootstrap()
+        #expect(model.workflowStatus == .ready)
+        #expect(model.diskSpaceReadiness?.freeBytes == DiskSpacePolicy.gibibytes(1))
+        #expect(model.diskSpaceReadiness?.reclaimableReserveBytes == DiskSpacePolicy.gibibytes(2))
+
+        hotkeyManager.press()
+
+        for _ in 0..<20 {
+            if audioCaptureService.startCallCount > 0 {
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(reserver.releaseCallCount == 1)
+        #expect(checker.freeBytes == DiskSpacePolicy.gibibytes(3))
+        #expect(audioCaptureService.startCallCount == 1)
+        #expect(model.workflowStatus == .recording)
+        #expect(model.diskSpaceReadiness?.reclaimableReserveBytes == 0)
+    }
+
+    @Test("Disk reserve manager allocates and releases a real cache reserve file")
+    func diskReserveManagerAllocatesAndReleasesReserveFile() throws {
+        let tempDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HeadCanonReserveTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDirectory)
+        }
+
+        let reserveFileURL = tempDirectory.appendingPathComponent("reserve.bin", isDirectory: false)
+        let manager = DiskSpaceReserveManager(
+            policy: DiskSpaceReservePolicy(
+                targetReservationBytes: 1_024 * 1_024,
+                minimumRemainingFreeBytes: 1_024 * 1_024
+            ),
+            reserveFileURL: reserveFileURL
+        )
+
+        let reserved = try manager.ensureReservation(freeBytes: 10 * 1_024 * 1_024)
+        #expect(reserved.status == .reserved)
+        #expect(reserved.reservedBytes >= 1_024 * 1_024)
+        #expect(FileManager.default.fileExists(atPath: reserveFileURL.path))
+
+        let released = try manager.releaseReservation(freeBytes: 10 * 1_024 * 1_024)
+        #expect(released.status == .none)
+        #expect(!FileManager.default.fileExists(atPath: reserveFileURL.path))
+    }
+
     @Test("Recording safety limit finalizes when hotkey release is missed")
     @MainActor
     func recordingSafetyLimitFinalizesMissedRelease() async {
@@ -717,6 +957,39 @@ struct HeadCanonSecurityTests {
         #expect(!audioCaptureService.isRecording)
         #expect(model.lastFailureStage == .recordingStop)
         #expect(model.lastRecordingAttemptDiagnostics?.recordingFinalizedAt == nil)
+    }
+
+    @Test("Disk-full recording finalization becomes actionable recording copy")
+    @MainActor
+    func diskFullRecordingFinalizationUsesActionableCopy() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        audioCaptureService.stopError = AudioCaptureError.finalizationFailed("Disk Full")
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager,
+            diskSpaceChecker: StubDiskSpaceChecker(
+                freeBytes: DiskSpacePolicy.gibibytes(3)
+            )
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(model.lastFailureStage == .recordingStop)
+        #expect(model.lastAttemptTruthState == .recordingFailed)
+        #expect(model.lastErrorMessage == "Head Canon needs at least 2 GB free to record safely. Free up disk space and try again.")
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionRequestStartedAt == nil)
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.truthState == .recordingFailed)
+        #expect(persistedRecords.first?.failure?.stage == DiagnosticFailureStage.recordingStop.rawValue)
+        #expect(persistedRecords.first?.failure?.message.contains("Underlying recording error: Disk Full") == true)
     }
 
     @Test("Live diagnostics capture an in-progress recording state")
@@ -1419,6 +1692,57 @@ struct HeadCanonSecurityTests {
         #expect(persistedRecords.first?.backend.responseHeadersReceivedMS == 420)
         #expect(persistedRecords.first?.backend.transportFailureStage == "awaitingResponseHeaders")
         #expect(persistedRecords.first?.backend.networkErrorCode == URLError.Code.timedOut.rawValue)
+    }
+
+    @Test("Invalid transcription response records response body diagnostics")
+    @MainActor
+    func invalidTranscriptionResponseRecordsBodyDiagnostics() async {
+        let hotkeyManager = StubHotkeyManager()
+        let backend = FailingTranscriptionBackend(
+            error: .invalidResponse(
+                TranscriptionFailureContext(
+                    requestMode: .standardCompletedRecording,
+                    fellBackFromStreaming: false,
+                    httpStatusCode: 200,
+                    requestID: "req_empty_body",
+                    openAIProcessingMS: 77,
+                    contentType: "text/plain; charset=utf-8",
+                    responseHeadersReceivedMS: 901,
+                    transportFailureStage: .readingResponseBody,
+                    networkErrorDomain: nil,
+                    networkErrorCode: nil,
+                    networkErrorCodeName: nil,
+                    responseBodyByteCount: 0,
+                    responseBodyUTF8Decodable: true,
+                    responseBodyTrimmedCharacterCount: 0,
+                    responseContentLengthBytes: 0
+                )
+            )
+        )
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == WorkflowStatus.failed)
+        #expect(model.lastFailureStage == DiagnosticFailureStage.transcription)
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseBodyByteCount == 0)
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseBodyUTF8Decodable == true)
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseBodyTrimmedCharacterCount == 0)
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseContentLengthBytes == 0)
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.backend.responseBodyByteCount == 0)
+        #expect(persistedRecords.first?.backend.responseBodyUTF8Decodable == true)
+        #expect(persistedRecords.first?.backend.responseBodyTrimmedCharacterCount == 0)
+        #expect(persistedRecords.first?.backend.responseContentLengthBytes == 0)
     }
 
     @Test("Transient transcription request failure retries once and inserts only once")
@@ -2395,6 +2719,9 @@ private func makeReadyModel(
     diagnosticsStore: any DiagnosticsStoring = NoOpDiagnosticsStore(),
     hotkeyManager: StubHotkeyManager = StubHotkeyManager(),
     clipboardWriter: any ClipboardWriting = RecordingClipboardWriter(),
+    diskSpaceChecker: (any DiskSpaceChecking)? = nil,
+    diskSpaceReserver: (any DiskSpaceReserving)? = StubDiskSpaceReserver(),
+    diskSpacePolicy: DiskSpacePolicy = .default,
     hotkeyStateProvider: @escaping (HotkeyShortcut) -> Bool = { _ in true },
     transcriptionTimeout: Duration = .seconds(30),
     maximumRecordingDuration: Duration = .seconds(90)
@@ -2418,6 +2745,9 @@ private func makeReadyModel(
         diagnosticsStore: diagnosticsStore,
         hotkeyManager: hotkeyManager,
         clipboardWriter: clipboardWriter,
+        diskSpaceChecker: diskSpaceChecker,
+        diskSpaceReserver: diskSpaceReserver,
+        diskSpacePolicy: diskSpacePolicy,
         hotkeyStateProvider: hotkeyStateProvider,
         transcriptionTimeout: transcriptionTimeout,
         maximumRecordingDuration: maximumRecordingDuration
@@ -2480,17 +2810,26 @@ private final class StubAudioCaptureService: AudioCapturing {
     private(set) var startCallCount = 0
     var recordedDuration: TimeInterval? = 1.25
     var recordedFileSizeBytes = 2_048
+    var startError: Error?
+    var stopError: Error?
 
     func availableInputDevices() -> [MicrophoneDevice] {
         []
     }
 
     func startRecording(preferredDeviceID: String?) throws {
+        if let startError {
+            throw startError
+        }
         startCallCount += 1
         isRecording = true
     }
 
     func stopRecording() async throws -> BoundedAudioInput {
+        if let stopError {
+            isRecording = false
+            throw stopError
+        }
         isRecording = false
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("headcanon-test-\(UUID().uuidString)")
@@ -2533,6 +2872,67 @@ private final class StubAudioCaptureService: AudioCapturing {
         let byteCount = max(recordedFileSizeBytes, 1)
         try? Data(count: byteCount).write(to: fileURL)
         return fileURL
+    }
+}
+
+private struct StubDiskSpaceChecker: DiskSpaceChecking {
+    var freeBytes: Int64
+
+    func freeBytes(for url: URL) throws -> Int64 {
+        freeBytes
+    }
+}
+
+private final class MutableDiskSpaceChecker: DiskSpaceChecking, @unchecked Sendable {
+    var freeBytes: Int64
+
+    init(freeBytes: Int64) {
+        self.freeBytes = freeBytes
+    }
+
+    func freeBytes(for url: URL) throws -> Int64 {
+        freeBytes
+    }
+}
+
+private final class StubDiskSpaceReserver: DiskSpaceReserving, @unchecked Sendable {
+    var reservation: DiskSpaceReservation
+    var checker: MutableDiskSpaceChecker?
+    private(set) var ensureCallCount = 0
+    private(set) var releaseCallCount = 0
+
+    init(
+        reservedBytes: Int64 = 0,
+        targetBytes: Int64 = DiskSpacePolicy.gibibytes(2),
+        minimumRemainingFreeBytes: Int64 = DiskSpacePolicy.gibibytes(10),
+        checker: MutableDiskSpaceChecker? = nil
+    ) {
+        self.reservation = DiskSpaceReservation(
+            reservedBytes: reservedBytes,
+            targetBytes: targetBytes,
+            minimumRemainingFreeBytes: minimumRemainingFreeBytes
+        )
+        self.checker = checker
+    }
+
+    func currentReservation(freeBytes: Int64) throws -> DiskSpaceReservation {
+        reservation
+    }
+
+    func ensureReservation(freeBytes: Int64) throws -> DiskSpaceReservation {
+        ensureCallCount += 1
+        return reservation
+    }
+
+    func releaseReservation(freeBytes: Int64) throws -> DiskSpaceReservation {
+        releaseCallCount += 1
+        checker?.freeBytes += reservation.reservedBytes
+        reservation = DiskSpaceReservation(
+            reservedBytes: 0,
+            targetBytes: reservation.targetBytes,
+            minimumRemainingFreeBytes: reservation.minimumRemainingFreeBytes
+        )
+        return reservation
     }
 }
 
@@ -3234,6 +3634,39 @@ private final class StandardTranscriptionURLProtocol: URLProtocol, @unchecked Se
         }
         return data
     }
+}
+
+private final class EmptyBodyTranscriptionURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.absoluteString == "https://api.openai.com/v1/audio/transcriptions"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+
+        let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: [
+                "content-type": "text/plain",
+                "content-length": "0",
+                "x-request-id": "req_empty_body",
+                "openai-processing-ms": "77",
+            ]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private struct HangingTranscriptionURLProtocolState: Sendable {

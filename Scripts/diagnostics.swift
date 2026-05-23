@@ -28,6 +28,10 @@ struct BackendRecord: Decodable {
     let networkErrorDomain: String?
     let networkErrorCode: Int?
     let networkErrorCodeName: String?
+    let responseBodyByteCount: Int?
+    let responseBodyUTF8Decodable: Bool?
+    let responseBodyTrimmedCharacterCount: Int?
+    let responseContentLengthBytes: Int?
 }
 
 struct TranscriptRecord: Decodable {
@@ -86,6 +90,10 @@ struct LiveStateRecord: Decodable {
     let workflowStatus: String
     let workflowStatusTitle: String
     let isReady: Bool
+    let diskReadinessStatus: String?
+    let diskFreeSpace: String?
+    let diskReserveStatus: String?
+    let diskReservedSpace: String?
     let audioCaptureIsRecording: Bool
     let hotkeyDisplayString: String
     let hotkeyPhysicallyPressed: Bool
@@ -372,6 +380,10 @@ func printLatest(_ record: AttemptRecord) {
     print("Network Error Domain: \(record.backend.networkErrorDomain ?? "Unknown")")
     print("Network Error Code: \(record.backend.networkErrorCode.map(String.init) ?? "Unknown")")
     print("Network Error Code Name: \(record.backend.networkErrorCodeName ?? "Unknown")")
+    print("Response Body Bytes: \(record.backend.responseBodyByteCount.map(String.init) ?? "Unknown")")
+    print("Response Body UTF-8 Decodable: \(record.backend.responseBodyUTF8Decodable.map { $0 ? "Yes" : "No" } ?? "Unknown")")
+    print("Response Body Trimmed Characters: \(record.backend.responseBodyTrimmedCharacterCount.map(String.init) ?? "Unknown")")
+    print("Response Content Length: \(record.backend.responseContentLengthBytes.map(String.init) ?? "Unknown")")
     if let releaseTimeInsertion = record.releaseTimeInsertion {
         print("Release-Time Target App: \(releaseTimeInsertion.applicationName)")
         if let target = releaseTimeInsertion.target {
@@ -408,6 +420,10 @@ func printLive(_ record: LiveStateRecord) {
     print("Current Attempt: \(record.currentAttemptID?.uuidString ?? "None")")
     print("Workflow: \(record.workflowStatusTitle) (\(record.workflowStatus))")
     print("Ready: \(record.isReady ? "Yes" : "No")")
+    print("Disk Readiness: \(record.diskReadinessStatus ?? "Unknown")")
+    print("Disk Free Space: \(record.diskFreeSpace ?? "Unknown")")
+    print("Disk Reserve: \(record.diskReserveStatus ?? "Unknown")")
+    print("Disk Reserved Space: \(record.diskReservedSpace ?? "Unknown")")
     print("Audio Capture Recording: \(record.audioCaptureIsRecording ? "Yes" : "No")")
     print("Hotkey: \(record.hotkeyDisplayString)")
     print("Hotkey Physically Pressed: \(record.hotkeyPhysicallyPressed ? "Yes" : "No")")

@@ -11,6 +11,7 @@ enum DictationAttemptTruthState: String, Codable, Equatable, Identifiable {
     case verifiedInsert
     case unverifiedInsert
     case setupBlocked
+    case systemReadinessBlocked
     case recordingFailed
     case safetyBlock
     case focusChanged
@@ -31,6 +32,8 @@ enum DictationAttemptTruthState: String, Codable, Equatable, Identifiable {
             "Unverified Insert"
         case .setupBlocked:
             "Setup Blocked"
+        case .systemReadinessBlocked:
+            "System Readiness Blocked"
         case .recordingFailed:
             "Recording Failed"
         case .safetyBlock:
@@ -60,6 +63,8 @@ enum DictationAttemptTruthState: String, Codable, Equatable, Identifiable {
             "Head Canon pasted into the active app but could not verify the field contents. If the text is missing, use Paste or Copy Last Transcript."
         case .setupBlocked:
             "Head Canon could not complete dictation because setup or permissions were still blocking the attempt."
+        case .systemReadinessBlocked:
+            "Head Canon blocked the attempt before recording because a required system readiness check was not satisfied."
         case .recordingFailed:
             "Head Canon could not complete the audio recording step."
         case .safetyBlock:
@@ -130,6 +135,46 @@ struct DictationAttemptBackendRecord: Codable, Equatable {
     let networkErrorDomain: String?
     let networkErrorCode: Int?
     let networkErrorCodeName: String?
+    let responseBodyByteCount: Int?
+    let responseBodyUTF8Decodable: Bool?
+    let responseBodyTrimmedCharacterCount: Int?
+    let responseContentLengthBytes: Int?
+
+    init(
+        identifier: String?,
+        requestMode: String?,
+        fellBackFromStreaming: Bool?,
+        httpStatusCode: Int?,
+        requestID: String?,
+        openAIProcessingMS: Int?,
+        responseContentType: String?,
+        responseHeadersReceivedMS: Int?,
+        transportFailureStage: String?,
+        networkErrorDomain: String?,
+        networkErrorCode: Int?,
+        networkErrorCodeName: String?,
+        responseBodyByteCount: Int? = nil,
+        responseBodyUTF8Decodable: Bool? = nil,
+        responseBodyTrimmedCharacterCount: Int? = nil,
+        responseContentLengthBytes: Int? = nil
+    ) {
+        self.identifier = identifier
+        self.requestMode = requestMode
+        self.fellBackFromStreaming = fellBackFromStreaming
+        self.httpStatusCode = httpStatusCode
+        self.requestID = requestID
+        self.openAIProcessingMS = openAIProcessingMS
+        self.responseContentType = responseContentType
+        self.responseHeadersReceivedMS = responseHeadersReceivedMS
+        self.transportFailureStage = transportFailureStage
+        self.networkErrorDomain = networkErrorDomain
+        self.networkErrorCode = networkErrorCode
+        self.networkErrorCodeName = networkErrorCodeName
+        self.responseBodyByteCount = responseBodyByteCount
+        self.responseBodyUTF8Decodable = responseBodyUTF8Decodable
+        self.responseBodyTrimmedCharacterCount = responseBodyTrimmedCharacterCount
+        self.responseContentLengthBytes = responseContentLengthBytes
+    }
 }
 
 struct DictationAttemptInsertionRecord: Codable, Equatable {

@@ -47,6 +47,44 @@ struct TranscriptionFailureContext: Equatable {
     let networkErrorDomain: String?
     let networkErrorCode: Int?
     let networkErrorCodeName: String?
+    let responseBodyByteCount: Int?
+    let responseBodyUTF8Decodable: Bool?
+    let responseBodyTrimmedCharacterCount: Int?
+    let responseContentLengthBytes: Int?
+
+    init(
+        requestMode: TranscriptionRequestMode,
+        fellBackFromStreaming: Bool,
+        httpStatusCode: Int?,
+        requestID: String?,
+        openAIProcessingMS: Int?,
+        contentType: String?,
+        responseHeadersReceivedMS: Int?,
+        transportFailureStage: TranscriptionTransportFailureStage?,
+        networkErrorDomain: String?,
+        networkErrorCode: Int?,
+        networkErrorCodeName: String?,
+        responseBodyByteCount: Int? = nil,
+        responseBodyUTF8Decodable: Bool? = nil,
+        responseBodyTrimmedCharacterCount: Int? = nil,
+        responseContentLengthBytes: Int? = nil
+    ) {
+        self.requestMode = requestMode
+        self.fellBackFromStreaming = fellBackFromStreaming
+        self.httpStatusCode = httpStatusCode
+        self.requestID = requestID
+        self.openAIProcessingMS = openAIProcessingMS
+        self.contentType = contentType
+        self.responseHeadersReceivedMS = responseHeadersReceivedMS
+        self.transportFailureStage = transportFailureStage
+        self.networkErrorDomain = networkErrorDomain
+        self.networkErrorCode = networkErrorCode
+        self.networkErrorCodeName = networkErrorCodeName
+        self.responseBodyByteCount = responseBodyByteCount
+        self.responseBodyUTF8Decodable = responseBodyUTF8Decodable
+        self.responseBodyTrimmedCharacterCount = responseBodyTrimmedCharacterCount
+        self.responseContentLengthBytes = responseContentLengthBytes
+    }
 }
 
 struct TranscriptionResult: Equatable {

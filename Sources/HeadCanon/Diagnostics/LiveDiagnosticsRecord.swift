@@ -29,6 +29,10 @@ struct LiveDiagnosticsRecord: Codable, Equatable, Sendable {
     let workflowStatus: String
     let workflowStatusTitle: String
     let isReady: Bool
+    let diskReadinessStatus: String?
+    let diskFreeSpace: String?
+    let diskReserveStatus: String?
+    let diskReservedSpace: String?
     let audioCaptureIsRecording: Bool
     let hotkeyDisplayString: String
     let hotkeyPhysicallyPressed: Bool

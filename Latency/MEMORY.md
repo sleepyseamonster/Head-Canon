@@ -82,6 +82,8 @@
 - On May 22, 2026 at `06:57 -0700`, hotkey physical-state checks were hardened to require both combined-session and HID hardware state to agree that the shortcut is still held. A stale session flag should no longer delay release finalization until the duration fuse.
 - A fresh installed-app attempt at `06:58 -0700` finalized via `globalModifierMonitor`, transcribed in about `2.03 s`, inserted as `unverifiedInsert`, and ended with no active recording/transcription.
 - On May 22, 2026 at `07:02 -0700`, empty `200 OK` text/plain transcription responses became retryable once. This targets the observed `06:55` record where headers and processing succeeded but the response body was empty.
+- On May 22, 2026 at `19:55 -0700`, D-Bug traced a recovery UI regression likely introduced during latency/status work: the copyable last-transcript panel still existed, but it only rendered when `lastTranscript` was non-empty. The fix keeps the `Last Transcript` recovery surface visible in both the menu and Settings with available, empty, and retention-off states. Treat this as a latency lesson: fast primary-path work must not hide the manual recovery path, because time-to-recovery is part of user-perceived performance.
+- See `/Users/worldbuilder/Desktop/Head Canon/Latency/artifacts/checkpoint-2026-05-22T19-55-00-0700-recovery-ui-regression.md`.
 
 ## Current Assumptions
 - The user wants a dedicated in-repo workspace for latency investigations, memory, and artifacts.
