@@ -6,6 +6,7 @@ enum HostCommand: String, Decodable {
     case healthCheck
     case captureFocusedTarget
     case insertTranscript
+    case targetSnapshotUpdate
 }
 
 struct HostCommandEnvelope: Decodable {
@@ -14,6 +15,8 @@ struct HostCommandEnvelope: Decodable {
     let operationID: UUID
     let issuedAt: Date
     let expiresAt: Date?
+    let target: HostTargetSnapshot?
+    let transcript: String?
 }
 
 struct HostResultEnvelope: Encodable {
@@ -25,8 +28,22 @@ struct HostResultEnvelope: Encodable {
     let message: String?
 }
 
-struct HostTargetSnapshot: Encodable {
+struct HostTargetSnapshot: Codable {
     let browser: String
+    let pageOrigin: String?
+    let pageTitle: String?
+    let framePath: String?
+    let frameIdentifier: String?
+    let targetClass: String
+    let editorFamily: String
+    let targetFingerprint: String?
+    let editable: Bool
+    let secure: Bool
+}
+
+struct StoredTargetSnapshot: Codable {
+    let browser: String
+    let observedAt: Date
     let pageOrigin: String?
     let pageTitle: String?
     let framePath: String?
@@ -83,6 +100,46 @@ func writeMessage<T: Encodable>(_ value: T) throws {
     try FileHandle.standardOutput.synchronize()
 }
 
+func snapshotFileURL() -> URL? {
+    guard let appSupportURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
+        return nil
+    }
+
+    return appSupportURL
+        .appendingPathComponent("HeadCanon", isDirectory: true)
+        .appendingPathComponent("browser-companion", isDirectory: true)
+        .appendingPathComponent("latest-target.json", isDirectory: false)
+}
+
+func persistSnapshot(_ snapshot: HostTargetSnapshot, observedAt: Date) throws {
+    guard let fileURL = snapshotFileURL() else {
+        return
+    }
+
+    try FileManager.default.createDirectory(
+        at: fileURL.deletingLastPathComponent(),
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+
+    let stored = StoredTargetSnapshot(
+        browser: snapshot.browser,
+        observedAt: observedAt,
+        pageOrigin: snapshot.pageOrigin,
+        pageTitle: snapshot.pageTitle,
+        framePath: snapshot.framePath,
+        frameIdentifier: snapshot.frameIdentifier,
+        targetClass: snapshot.targetClass,
+        editorFamily: snapshot.editorFamily,
+        targetFingerprint: snapshot.targetFingerprint,
+        editable: snapshot.editable,
+        secure: snapshot.secure
+    )
+    let payload = try encoder.encode(stored)
+    try payload.write(to: fileURL, options: [.atomic])
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+}
+
 func handle(_ command: HostCommandEnvelope) -> HostResultEnvelope {
     switch command.command {
     case .healthCheck:
@@ -103,6 +160,29 @@ func handle(_ command: HostCommandEnvelope) -> HostResultEnvelope {
             target: nil,
             message: "The native host scaffold is installed, but the Head Canon app has not started driving browser commands yet."
         )
+    case .targetSnapshotUpdate:
+        do {
+            if let target = command.target {
+                try persistSnapshot(target, observedAt: command.issuedAt)
+            }
+            return HostResultEnvelope(
+                protocolVersion: command.protocolVersion,
+                result: "targetSnapshot",
+                operationID: command.operationID,
+                observedAt: Date(),
+                target: command.target,
+                message: "Stored the latest browser target snapshot for Head Canon."
+            )
+        } catch {
+            return HostResultEnvelope(
+                protocolVersion: command.protocolVersion,
+                result: "failed",
+                operationID: command.operationID,
+                observedAt: Date(),
+                target: command.target,
+                message: "The browser companion host could not persist the latest target snapshot."
+            )
+        }
     }
 }
 

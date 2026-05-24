@@ -24,6 +24,22 @@ function buildHealthCheckEnvelope() {
   };
 }
 
+function forwardSnapshotToNative(snapshotResponse) {
+  if (!nativePort || !snapshotResponse?.target) {
+    return;
+  }
+
+  nativePort.postMessage({
+    protocolVersion: PROTOCOL_VERSION,
+    command: "targetSnapshotUpdate",
+    operationID: snapshotResponse.operationID ?? nextOperationId(),
+    issuedAt: snapshotResponse.observedAt ?? new Date().toISOString(),
+    expiresAt: null,
+    target: snapshotResponse.target,
+    transcript: null
+  });
+}
+
 function scheduleReconnect() {
   if (reconnectTimer !== null) {
     return;
@@ -147,7 +163,23 @@ chrome.action.onClicked.addListener(async () => {
     target: null,
     transcript: null
   });
+  forwardSnapshotToNative(response);
   log("Focused target snapshot", response);
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.event === "focusedTargetUpdate") {
+    forwardSnapshotToNative(message.snapshot);
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  if (message?.event === "focusedTargetUnavailable") {
+    sendResponse({ ok: true });
+    return false;
+  }
+
+  return false;
 });
 
 connectNativeHost();
