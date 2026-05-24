@@ -55,7 +55,7 @@ Current measured evidence from the installed app:
 - the diagnostics reader now supports rollups by app class, failure reason, and response-header timing, so the next gap is root-cause fixing rather than observability
 - one guarded retry for transient transport failures is already in the repo; it does not address the hard timeout path or `Codex` focus-drift path
 - `AGENTS.md` still names `gpt-4o-transcribe` as the initial implementation priority, but the currently healthy default is `gpt-4o-mini-transcribe`
-- there is still no browser companion, no browser fixture page, and no site-specific browser matrix evidence
+- the repo now has a Chromium browser companion scaffold, local browser fixtures, a native-host broker, app-side companion routing, and a Safari Web Extension scaffold, but it still lacks Safari bridge parity and installed-app matrix evidence
 
 ## Working Rules
 - test only `/Applications/HeadCanon.app`

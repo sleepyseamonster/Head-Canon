@@ -734,8 +734,9 @@ final class HeadCanonModel {
     )
     @ObservationIgnored private let hotkeyStateProvider: (HotkeyShortcut) -> Bool
     @ObservationIgnored private let transcriptionTimeout: Duration
-    @ObservationIgnored private let maximumRecordingDuration: Duration
+    @ObservationIgnored private let maximumRecordingDurationOverride: Duration?
     @ObservationIgnored private let browserCompanionMonitor: any BrowserCompanionMonitoring
+    @ObservationIgnored private let browserCompanionBroker: any BrowserCompanionCommandBrokering
 
     init(
         preferences: AppPreferences = AppPreferences(),
@@ -752,10 +753,11 @@ final class HeadCanonModel {
         diskSpaceChecker: (any DiskSpaceChecking)? = nil,
         diskSpaceReserver: (any DiskSpaceReserving)? = nil,
         browserCompanionMonitor: (any BrowserCompanionMonitoring)? = nil,
+        browserCompanionBroker: (any BrowserCompanionCommandBrokering)? = nil,
         diskSpacePolicy: DiskSpacePolicy = .default,
         hotkeyStateProvider: @escaping (HotkeyShortcut) -> Bool = { $0.isPressedInCurrentSession() },
         transcriptionTimeout: Duration = .seconds(30),
-        maximumRecordingDuration: Duration = .seconds(90)
+        maximumRecordingDuration: Duration? = nil
     ) {
         self.preferences = preferences
         self.permissionsManager = permissionsManager ?? PermissionsManager()
@@ -771,6 +773,7 @@ final class HeadCanonModel {
         self.statusOverlay = statusOverlay ?? StatusOverlayController.shared
         self.clipboardWriter = clipboardWriter ?? SystemClipboardWriter()
         self.browserCompanionMonitor = browserCompanionMonitor ?? BrowserCompanionMonitor()
+        self.browserCompanionBroker = browserCompanionBroker ?? BrowserCompanionCommandBroker()
         self.diskSpaceReadinessService = DiskSpaceReadinessService(
             checker: diskSpaceChecker ?? VolumeDiskSpaceChecker(),
             reserver: diskSpaceReserver ?? DiskSpaceReserveManager(),
@@ -779,7 +782,7 @@ final class HeadCanonModel {
         )
         self.hotkeyStateProvider = hotkeyStateProvider
         self.transcriptionTimeout = transcriptionTimeout
-        self.maximumRecordingDuration = maximumRecordingDuration
+        self.maximumRecordingDurationOverride = maximumRecordingDuration
         self.lastValidationDate = preferences.lastValidationDate
         self.audioCaptureService.unexpectedRecordingCompletionHandler = { [weak self] completion in
             self?.handleUnexpectedAudioCaptureCompletion(completion)
@@ -1385,6 +1388,159 @@ final class HeadCanonModel {
         )
     }
 
+    private func browserCompanionPlannedAttempt(
+        from report: InsertionAttemptReport
+    ) -> InsertionAttemptReport? {
+        guard report.capabilities.prefersBrowserCompanion else {
+            return nil
+        }
+
+        guard let browserMetadata = report.capabilities.browserMetadata else {
+            return nil
+        }
+
+        let installation = browserCompanionStatus.installations.first { installation in
+            installation.browser == browserMetadata.browser
+        }
+        guard installation?.isInstalled == true else {
+            return nil
+        }
+
+        return report.replacing(
+            chosenStrategy: .browserCompanion,
+            strategyReason: "The focused target is a supported Chromium browser editor, so Head Canon will prefer the browser companion's DOM-aware insertion path before falling back to AX or paste."
+        )
+    }
+
+    private func insertUsingPreferredPath(
+        _ text: String,
+        target: (any TextInsertionTargetHandle)?,
+        allowPasteFallback: Bool,
+        observationLabel: String
+    ) async throws -> InsertionAttemptReport {
+        let plannedReport = try textInsertionService.planExecutionInsertion(
+            relativeTo: target,
+            allowPasteFallback: allowPasteFallback,
+            observationLabel: observationLabel
+        )
+        let preferredReport = browserCompanionPlannedAttempt(from: plannedReport) ?? plannedReport
+        lastInsertionAttemptReport = preferredReport
+
+        if let browserResult = try await attemptBrowserCompanionInsertion(
+            text,
+            report: preferredReport
+        ) {
+            refreshBrowserCompanionStatus()
+            return browserResult
+        }
+
+        return try await textInsertionService.insert(
+            text,
+            target: target,
+            allowPasteFallback: allowPasteFallback,
+            observationLabel: observationLabel
+        )
+    }
+
+    private func attemptBrowserCompanionInsertion(
+        _ text: String,
+        report: InsertionAttemptReport
+    ) async throws -> InsertionAttemptReport? {
+        guard report.chosenStrategy == .browserCompanion else {
+            return nil
+        }
+
+        guard let browserMetadata = report.capabilities.browserMetadata else {
+            return nil
+        }
+
+        let captureResult = await browserCompanionBroker.captureFocusedTarget(timeout: .seconds(2))
+        guard
+            let captureResult,
+            captureResult.result == .targetSnapshot,
+            let snapshot = captureResult.target,
+            snapshot.browser == browserMetadata.browser
+        else {
+            return nil
+        }
+
+        let insertResult = await browserCompanionBroker.insertTranscript(
+            text,
+            target: snapshot,
+            timeout: .seconds(3)
+        )
+
+        guard let insertResult else {
+            return nil
+        }
+
+        let updatedBrowserMetadata = browserMetadataFromSnapshot(
+            from: insertResult.target ?? snapshot,
+            operationID: insertResult.operationID,
+            focusCapturedAt: captureResult.observedAt,
+            focusValidatedAt: insertResult.observedAt,
+            protocolVersion: insertResult.protocolVersion
+        )
+        let updatedCapabilities = report.capabilities.with(browserMetadata: updatedBrowserMetadata)
+
+        switch insertResult.result {
+        case .inserted:
+            return report.replacing(
+                capabilities: updatedCapabilities,
+                chosenStrategy: .browserCompanion,
+                appliedStrategy: .browserCompanion,
+                verificationOutcome: .some(.verified),
+                placeholderHandlingOutcome: .some(.noneNeeded)
+            )
+        case .unverifiedInsert:
+            return report.replacing(
+                capabilities: updatedCapabilities,
+                chosenStrategy: .browserCompanion,
+                appliedStrategy: .browserCompanion,
+                verificationOutcome: .some(.unverified),
+                placeholderHandlingOutcome: .some(.noneNeeded)
+            )
+        case .expired:
+            throw TextInsertionError.focusChanged
+        case .unsupported, .unavailable, .failed, .healthy, .targetSnapshot:
+            return nil
+        }
+    }
+
+    private func browserMetadataFromSnapshot(
+        from snapshot: BrowserCompanionTargetSnapshot,
+        operationID: UUID,
+        focusCapturedAt: Date,
+        focusValidatedAt: Date,
+        protocolVersion: Int
+    ) -> BrowserTargetMetadata {
+        let verificationMode: BrowserVerificationMode = switch snapshot.targetClass {
+        case .plainTextControl:
+            .exactValueReadback
+        case .richEditable, .framedEditable, .appWrappedWebEditor:
+            .transcriptPresenceReadback
+        case .unsupportedOrSecure, .unknown:
+            .unavailable
+        }
+
+        return BrowserTargetMetadata(
+            browser: snapshot.browser,
+            targetClass: snapshot.targetClass,
+            editorFamily: snapshot.editorFamily,
+            verificationMode: verificationMode,
+            pageOrigin: snapshot.pageOrigin,
+            pageTitle: snapshot.pageTitle,
+            framePath: snapshot.framePath,
+            frameIdentifier: snapshot.frameIdentifier,
+            targetFingerprint: snapshot.targetFingerprint,
+            operationID: operationID,
+            focusCapturedAt: focusCapturedAt,
+            focusValidatedAt: focusValidatedAt,
+            protocolVersion: protocolVersion,
+            extensionVersion: nil
+        )
+    }
+
     func saveAPIKey(_ apiKey: String) async {
         do {
             let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1518,7 +1674,7 @@ final class HeadCanonModel {
         Task {
             @MainActor in
             do {
-                lastInsertionAttemptReport = try await textInsertionService.insert(
+                lastInsertionAttemptReport = try await insertUsingPreferredPath(
                     lastTranscript,
                     target: nil,
                     allowPasteFallback: preferences.pasteFallbackEnabled,
@@ -2253,13 +2409,7 @@ final class HeadCanonModel {
                 return
             }
 
-            lastInsertionAttemptReport = try textInsertionService.planExecutionInsertion(
-                relativeTo: insertionTarget,
-                allowPasteFallback: preferences.pasteFallbackEnabled,
-                observationLabel: "Insert-Time Context"
-            )
-
-            lastInsertionAttemptReport = try await textInsertionService.insert(
+            lastInsertionAttemptReport = try await insertUsingPreferredPath(
                 result.text,
                 target: insertionTarget,
                 allowPasteFallback: preferences.pasteFallbackEnabled,
@@ -2621,7 +2771,7 @@ final class HeadCanonModel {
 
     private func startRecordingDurationLimit() {
         cancelRecordingDurationLimit()
-        let maximumRecordingDuration = maximumRecordingDuration
+        let maximumRecordingDuration = maximumRecordingDurationOverride ?? preferences.recordingSafetyLimit.duration
         recordingDurationLimitTask = Task { @MainActor [weak self] in
             do {
                 try await Task.sleep(for: maximumRecordingDuration)
@@ -2983,10 +3133,10 @@ final class HeadCanonModel {
             framePath: canUseSnapshot ? snapshot?.framePath : browserMetadata.framePath,
             frameIdentifier: canUseSnapshot ? snapshot?.frameIdentifier : browserMetadata.frameIdentifier,
             targetFingerprint: canUseSnapshot ? snapshot?.targetFingerprint ?? browserMetadata.targetFingerprint : browserMetadata.targetFingerprint,
-            operationID: attemptID,
-            focusCapturedAt: phase == .captured ? report.observedAt : browserMetadata.focusCapturedAt,
-            focusValidatedAt: phase == .validated ? report.observedAt : browserMetadata.focusValidatedAt,
-            protocolVersion: installation?.isInstalled == true ? browserCompanionStatus.protocolVersion : nil,
+            operationID: browserMetadata.operationID ?? attemptID,
+            focusCapturedAt: phase == .captured ? (browserMetadata.focusCapturedAt ?? report.observedAt) : browserMetadata.focusCapturedAt,
+            focusValidatedAt: phase == .validated ? (browserMetadata.focusValidatedAt ?? report.observedAt) : browserMetadata.focusValidatedAt,
+            protocolVersion: browserMetadata.protocolVersion ?? (installation?.isInstalled == true ? browserCompanionStatus.protocolVersion : nil),
             extensionVersion: nil
         )
     }
@@ -3111,6 +3261,10 @@ final class HeadCanonModel {
 
     private func userFacingRecordingFailureMessage(for error: Error) -> String {
         if isDiskSpaceError(error) {
+            if let diskSpaceReadiness, diskSpaceReadiness.status == .healthy {
+                return "Audio capture stopped before Head Canon could finalize the recording, even though disk space is healthy. Try again; if it repeats, relaunch Head Canon to reset the microphone session."
+            }
+
             return diskSpaceReadiness?.blockingMessage
                 ?? "Head Canon needs at least \(diskSpaceReadinessService.policy.minimumRecordingLabel) free to record safely. Free up disk space and try again."
         }

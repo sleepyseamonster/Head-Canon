@@ -1,5 +1,6 @@
 const NATIVE_HOST_NAME = "local.headcanon.browser_companion";
 const PROTOCOL_VERSION = 1;
+const COMPANION_BROWSER = "chrome";
 
 let nativePort = null;
 let reconnectTimer = null;
@@ -12,31 +13,18 @@ function nextOperationId() {
   return crypto.randomUUID();
 }
 
-function buildHealthCheckEnvelope() {
-  return {
-    protocolVersion: PROTOCOL_VERSION,
-    command: "healthCheck",
-    operationID: nextOperationId(),
-    issuedAt: new Date().toISOString(),
-    expiresAt: null,
-    target: null,
-    transcript: null
-  };
-}
-
 function forwardSnapshotToNative(snapshotResponse) {
   if (!nativePort || !snapshotResponse?.target) {
     return;
   }
 
   nativePort.postMessage({
+    ...snapshotResponse,
     protocolVersion: PROTOCOL_VERSION,
-    command: "targetSnapshotUpdate",
-    operationID: snapshotResponse.operationID ?? nextOperationId(),
-    issuedAt: snapshotResponse.observedAt ?? new Date().toISOString(),
-    expiresAt: null,
-    target: snapshotResponse.target,
-    transcript: null
+    target: {
+      ...snapshotResponse.target,
+      browser: snapshotResponse.target.browser ?? COMPANION_BROWSER
+    }
   });
 }
 
@@ -136,8 +124,18 @@ function connectNativeHost() {
       nativePort = null;
       scheduleReconnect();
     });
-    nativePort.postMessage(buildHealthCheckEnvelope());
     log("Native host connected.");
+    void sendToActiveTab({
+      protocolVersion: PROTOCOL_VERSION,
+      command: "captureFocusedTarget",
+      operationID: nextOperationId(),
+      issuedAt: new Date().toISOString(),
+      expiresAt: null,
+      target: null,
+      transcript: null
+    }).then((response) => {
+      forwardSnapshotToNative(response);
+    });
   } catch (error) {
     log("Native host connection failed.", error?.message ?? String(error));
     nativePort = null;

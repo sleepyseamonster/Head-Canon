@@ -44,6 +44,7 @@ enum TextInsertionError: LocalizedError {
 protocol TextInsertionTargetHandle: AnyObject {}
 
 enum InsertionStrategy: String, Equatable, CaseIterable, Identifiable {
+    case browserCompanion
     case axValueReplacement
     case customEditorPaste
     case pasteFallback
@@ -54,6 +55,8 @@ enum InsertionStrategy: String, Equatable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .browserCompanion:
+            "Browser Companion"
         case .axValueReplacement:
             "AX Value Replacement"
         case .customEditorPaste:
@@ -244,6 +247,52 @@ struct TargetCapabilities: Equatable {
     var prefersOpaquePasteTransport: Bool {
         capabilityProfile == .opaquePasteCapable
     }
+
+    var prefersBrowserCompanion: Bool {
+        guard let browserMetadata else {
+            return false
+        }
+
+        guard browserMetadata.targetClass == .plainTextControl || browserMetadata.targetClass == .richEditable else {
+            return false
+        }
+
+        switch browserMetadata.browser {
+        case .chrome, .arc, .edge, .brave:
+            return true
+        case .safari, .firefox, .opera, .other:
+            return false
+        }
+    }
+
+    func with(browserMetadata: BrowserTargetMetadata?) -> TargetCapabilities {
+        TargetCapabilities(
+            applicationName: applicationName,
+            bundleIdentifier: bundleIdentifier,
+            processIdentifier: processIdentifier,
+            contextKind: contextKind,
+            capabilityProfile: capabilityProfile,
+            browserMetadata: browserMetadata,
+            role: role,
+            subrole: subrole,
+            roleDescription: roleDescription,
+            title: title,
+            identifier: identifier,
+            placeholderValue: placeholderValue,
+            placeholderLikelyActive: placeholderLikelyActive,
+            placeholderAmbiguousValueDetected: placeholderAmbiguousValueDetected,
+            domIdentifier: domIdentifier,
+            valueReadable: valueReadable,
+            valueSettable: valueSettable,
+            selectedTextRangeReadable: selectedTextRangeReadable,
+            selectedTextReadable: selectedTextReadable,
+            editable: editable,
+            secure: secure,
+            pasteCompatible: pasteCompatible,
+            directInsertCompatible: directInsertCompatible,
+            appLevelPasteOnly: appLevelPasteOnly
+        )
+    }
 }
 
 struct InsertionStrategyRejection: Equatable, Identifiable {
@@ -324,6 +373,30 @@ struct InsertionAttemptReport: Equatable {
             strategyReason: strategyReason,
             verificationOutcome: verificationOutcome,
             placeholderHandlingOutcome: placeholderHandlingOutcome,
+            rejectedStrategies: rejectedStrategies
+        )
+    }
+
+    func replacing(
+        capabilities: TargetCapabilities? = nil,
+        chosenStrategy: InsertionStrategy? = nil,
+        appliedStrategy: InsertionStrategy? = nil,
+        predictedFailureClass: InsertionFailureClass?? = nil,
+        strategyReason: String? = nil,
+        verificationOutcome: InsertionVerificationOutcome?? = nil,
+        placeholderHandlingOutcome: PlaceholderHandlingOutcome?? = nil
+    ) -> InsertionAttemptReport {
+        InsertionAttemptReport(
+            observedAt: observedAt,
+            observationLabel: observationLabel,
+            capabilities: capabilities ?? self.capabilities,
+            allowPasteFallback: allowPasteFallback,
+            chosenStrategy: chosenStrategy ?? self.chosenStrategy,
+            appliedStrategy: appliedStrategy ?? self.appliedStrategy,
+            predictedFailureClass: predictedFailureClass ?? self.predictedFailureClass,
+            strategyReason: strategyReason ?? self.strategyReason,
+            verificationOutcome: verificationOutcome ?? self.verificationOutcome,
+            placeholderHandlingOutcome: placeholderHandlingOutcome ?? self.placeholderHandlingOutcome,
             rejectedStrategies: rejectedStrategies
         )
     }
@@ -1204,7 +1277,7 @@ struct TextInsertionService: TextInsertionServicing {
         )
 
         switch attempt.chosenStrategy {
-        case .unsupported:
+        case .unsupported, .browserCompanion:
             throw error(for: attempt.predictedFailureClass)
         case .axValueReplacement:
             try validateTargetStillEligible(resolvedTarget, strategy: .axValueReplacement)
@@ -1551,7 +1624,7 @@ struct TextInsertionService: TextInsertionServicing {
         }
 
         switch strategy {
-        case .customEditorPaste:
+        case .browserCompanion, .customEditorPaste:
             let currentCapabilities = capabilities(for: currentContext)
             guard currentCapabilities.editable else {
                 throw TextInsertionError.unsupportedTarget
@@ -1649,7 +1722,7 @@ struct TextInsertionService: TextInsertionServicing {
         switch strategy {
         case .appClipboardPaste:
             return appClipboardPasteboardRestoreDelay
-        case .customEditorPaste:
+        case .browserCompanion, .customEditorPaste:
             return customEditorPasteboardRestoreDelay
         case .pasteFallback, .axValueReplacement, .unsupported:
             return standardPasteboardRestoreDelay
@@ -1658,7 +1731,7 @@ struct TextInsertionService: TextInsertionServicing {
 
     private func pasteboardDispatchDelay(for strategy: InsertionStrategy) -> Duration {
         switch strategy {
-        case .appClipboardPaste, .customEditorPaste:
+        case .appClipboardPaste, .browserCompanion, .customEditorPaste:
             return .milliseconds(45)
         case .pasteFallback, .axValueReplacement, .unsupported:
             return .milliseconds(20)

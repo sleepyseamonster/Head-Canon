@@ -42,13 +42,29 @@ The Chromium browser companion currently ships as a local unpacked-extension sca
 Developer workflow:
 
 1. Load `/Users/worldbuilder/Desktop/Head Canon/BrowserCompanion/Chromium` as an unpacked extension.
-2. Copy the assigned extension ID.
-3. Install the native host manifest with:
-   - `./Scripts/install_chromium_companion.sh --extension-id <extension-id>`
+2. Install the native host manifest with:
+   - `./Scripts/install_chromium_companion.sh`
+3. The scaffold now pins a stable local development extension ID:
+   - `cmjkhlmckbjapkhoecamfbemddfgkjbe`
 4. Serve the local fixture page with:
    - `./Scripts/serve_browser_fixtures.sh --open`
 
-This browser lane is still a scaffold. The installed app does not yet drive the companion end to end.
+Important note:
+
+- the repo-local `./Scripts/run_chromium_fixture_matrix.sh` automation now proves the fixture page can launch in a temp Chrome profile, but Chrome still does not automatically activate the unpacked extension from that forced-profile path on this machine
+- for now, real Chromium matrix evidence still requires a manual `Load unpacked` step in Chrome developer mode
+
+This browser lane is now partially live:
+
+- the installed app can detect Chromium native-host installation state
+- the extension can persist real browser target snapshots into Head Canon diagnostics
+- the app can prefer browser-companion insertion for eligible Chromium targets before falling back to AX or paste
+
+What still is not done:
+
+- the Safari scaffold exists, but it is not yet app-bridged or installed-app verified
+- no installed-app browser matrix evidence yet
+- no site-specific adapters for `ChatGPT`, `Gmail`, or `Google Docs`
 
 ## Stable Signing
 

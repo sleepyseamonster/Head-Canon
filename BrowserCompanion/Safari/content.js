@@ -1,4 +1,6 @@
+const extensionAPI = globalThis.browser ?? globalThis.chrome;
 const PROTOCOL_VERSION = 1;
+const BROWSER_HOST = "safari";
 let lastPublishedFingerprint = null;
 let lastPublishedAt = 0;
 
@@ -25,8 +27,7 @@ function editableDescriptor(element) {
   const placeholder = element.getAttribute("placeholder") ?? null;
   const id = element.id || null;
   const classes = Array.from(element.classList ?? []).join(" ");
-  const fingerprintParts = [tagName, role, ariaLabel, placeholder, id, classes]
-    .filter(Boolean);
+  const fingerprintParts = [tagName, role, ariaLabel, placeholder, id, classes].filter(Boolean);
 
   const isTextInput = tagName === "input" && !["password", "hidden"].includes((element.type ?? "").toLowerCase());
   const isTextarea = tagName === "textarea";
@@ -123,7 +124,7 @@ function captureFocusedTargetSnapshot(operationID = nextOperationId()) {
     operationID,
     observedAt: new Date().toISOString(),
     target: {
-      browser: "chrome",
+      browser: BROWSER_HOST,
       pageOrigin: location.origin,
       pageTitle: document.title,
       framePath: framePath.join(" > ") || "0",
@@ -144,7 +145,7 @@ function publishFocusedTargetSnapshot() {
   const now = Date.now();
 
   if (snapshot.result !== "targetSnapshot") {
-    void chrome.runtime.sendMessage({
+    void extensionAPI.runtime.sendMessage({
       event: "focusedTargetUnavailable",
       snapshot
     }).catch(() => {});
@@ -157,7 +158,7 @@ function publishFocusedTargetSnapshot() {
 
   lastPublishedFingerprint = fingerprint;
   lastPublishedAt = now;
-  void chrome.runtime.sendMessage({
+  void extensionAPI.runtime.sendMessage({
     event: "focusedTargetUpdate",
     snapshot
   }).catch(() => {});
@@ -288,7 +289,7 @@ function insertTranscript(message) {
       operationID: message.operationID ?? nextOperationId(),
       observedAt: new Date().toISOString(),
       target: snapshot.target,
-      message: "The focused browser target is not yet supported by the companion scaffold."
+      message: "The focused browser target is not yet supported by the Safari companion scaffold."
     };
   } catch (error) {
     return {
@@ -302,7 +303,7 @@ function insertTranscript(message) {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+extensionAPI.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || typeof message !== "object") {
     sendResponse(null);
     return false;

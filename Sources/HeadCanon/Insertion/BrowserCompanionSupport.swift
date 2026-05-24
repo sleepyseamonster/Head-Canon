@@ -162,6 +162,23 @@ struct BrowserTargetMetadata: Codable, Equatable {
     let extensionVersion: String?
 }
 
+extension BrowserTargetMetadata {
+    func snapshot() -> BrowserCompanionTargetSnapshot {
+        BrowserCompanionTargetSnapshot(
+            browser: browser,
+            pageOrigin: pageOrigin,
+            pageTitle: pageTitle,
+            framePath: framePath,
+            frameIdentifier: frameIdentifier,
+            targetClass: targetClass,
+            editorFamily: editorFamily,
+            targetFingerprint: targetFingerprint,
+            editable: verificationMode != .unavailable && targetClass != .unsupportedOrSecure,
+            secure: targetClass == .unsupportedOrSecure || editorFamily == .secureField
+        )
+    }
+}
+
 enum BrowserTargetClassifier {
     static func editorFamily(
         role: String?,
@@ -310,6 +327,7 @@ enum BrowserCompanionCommandKind: String, Codable, Equatable {
     case healthCheck
     case captureFocusedTarget
     case insertTranscript
+    case targetSnapshotUpdate
 }
 
 enum BrowserCompanionResultKind: String, Codable, Equatable {

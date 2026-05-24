@@ -316,29 +316,40 @@ extension AudioCaptureService: AVCaptureFileOutputRecordingDelegate {
         error: Error?
     ) {
         Task { @MainActor [weak self] in
-            self?.handleRecordingFinished(outputFileURL: outputFileURL, error: error as NSError?)
+            await self?.handleRecordingFinished(outputFileURL: outputFileURL, error: error as NSError?)
         }
     }
 
     @MainActor
-    private func handleRecordingFinished(outputFileURL: URL, error: NSError?) {
+    private func handleRecordingFinished(outputFileURL: URL, error: NSError?) async {
         let continuation = pendingStopContinuation
         let duration = pendingDuration ?? startedAt.map { Date().timeIntervalSince($0) }
         let mimeType = activeMimeType
         let shouldDiscardRecording = shouldDiscardRecording
+        let recordingStartedAt = startedAt
 
         let recordingFinishedSuccessfully =
             (error?.userInfo[AVErrorRecordingSuccessfullyFinishedKey] as? NSNumber)?.boolValue ?? (error == nil)
+
+        let finalizedFileURL: URL?
+        if shouldDiscardRecording || !recordingFinishedSuccessfully {
+            finalizedFileURL = nil
+        } else {
+            finalizedFileURL = await finalizedRecordingFileURL(
+                expectedURL: outputFileURL,
+                recordingStartedAt: recordingStartedAt
+            )
+        }
 
         cleanup(removeOutputFile: shouldDiscardRecording || !recordingFinishedSuccessfully)
 
         guard let continuation else {
             notifyUnexpectedCompletion(
-                outputFileURL: outputFileURL,
+                outputFileURL: finalizedFileURL ?? outputFileURL,
                 mimeType: mimeType,
                 duration: duration,
                 shouldDiscardRecording: shouldDiscardRecording,
-                recordingFinishedSuccessfully: recordingFinishedSuccessfully,
+                recordingFinishedSuccessfully: recordingFinishedSuccessfully && finalizedFileURL != nil,
                 error: error
             )
             return
@@ -358,18 +369,78 @@ extension AudioCaptureService: AVCaptureFileOutputRecordingDelegate {
             return
         }
 
-        guard FileManager.default.fileExists(atPath: outputFileURL.path()) else {
+        guard let finalizedFileURL else {
             continuation.resume(throwing: AudioCaptureError.outputMissing)
             return
         }
 
         continuation.resume(
             returning: BoundedAudioInput(
-                fileURL: outputFileURL,
+                fileURL: finalizedFileURL,
                 mimeType: mimeType,
                 duration: duration
             )
         )
+    }
+
+    private func finalizedRecordingFileURL(expectedURL: URL, recordingStartedAt: Date?) async -> URL? {
+        for _ in 0..<10 {
+            if recordingFileExists(at: expectedURL) {
+                return expectedURL
+            }
+
+            if let recoveredURL = newestRecordingFile(startedAfter: recordingStartedAt) {
+                return recoveredURL
+            }
+
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        return recordingFileExists(at: expectedURL) ? expectedURL : newestRecordingFile(startedAfter: recordingStartedAt)
+    }
+
+    private func recordingFileExists(at url: URL) -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path()) else {
+            return false
+        }
+
+        let byteCount = (try? FileManager.default.attributesOfItem(atPath: url.path())[.size] as? NSNumber)?.int64Value ?? 0
+        return byteCount > 0
+    }
+
+    private func newestRecordingFile(startedAfter recordingStartedAt: Date?) -> URL? {
+        guard
+            let recordingURLs = try? FileManager.default.contentsOfDirectory(
+                at: Self.recordingsDirectoryURL,
+                includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
+                options: [.skipsHiddenFiles]
+            )
+        else {
+            return nil
+        }
+
+        let minimumModificationDate = recordingStartedAt?.addingTimeInterval(-1)
+
+        return recordingURLs
+            .filter { $0.pathExtension == "m4a" }
+            .compactMap { url -> (url: URL, modifiedAt: Date)? in
+                guard
+                    let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                    let modifiedAt = values.contentModificationDate,
+                    (values.fileSize ?? 0) > 0
+                else {
+                    return nil
+                }
+
+                if let minimumModificationDate, modifiedAt < minimumModificationDate {
+                    return nil
+                }
+
+                return (url, modifiedAt)
+            }
+            .sorted { $0.modifiedAt > $1.modifiedAt }
+            .first?
+            .url
     }
 
     private func notifyUnexpectedCompletion(

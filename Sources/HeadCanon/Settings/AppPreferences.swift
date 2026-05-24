@@ -59,6 +59,61 @@ enum OpenAITranscriptionModel: String, CaseIterable, Identifiable {
     }
 }
 
+enum RecordingSafetyLimit: String, CaseIterable, Identifiable {
+    case thirtySeconds
+    case oneMinute
+    case threeMinutes
+    case fiveMinutes
+    case tenMinutes
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .thirtySeconds:
+            "30 seconds"
+        case .oneMinute:
+            "1 minute"
+        case .threeMinutes:
+            "3 minutes"
+        case .fiveMinutes:
+            "5 minutes"
+        case .tenMinutes:
+            "10 minutes"
+        }
+    }
+
+    var duration: Duration {
+        switch self {
+        case .thirtySeconds:
+            .seconds(30)
+        case .oneMinute:
+            .seconds(60)
+        case .threeMinutes:
+            .seconds(180)
+        case .fiveMinutes:
+            .seconds(300)
+        case .tenMinutes:
+            .seconds(600)
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .thirtySeconds:
+            "Best for short, snappy dictation."
+        case .oneMinute:
+            "A balanced cap for medium-length thoughts."
+        case .threeMinutes:
+            "A roomy default for longer voice drafting."
+        case .fiveMinutes:
+            "Good for extended brainstorming or story drafting."
+        case .tenMinutes:
+            "Longest built-in cap before Head Canon forces finalization."
+        }
+    }
+}
+
 enum HotkeyTrigger: Equatable {
     case key(keyCode: UInt32, carbonModifiers: UInt32)
     case modifierHold(requiredModifiers: NSEvent.ModifierFlags)
@@ -205,6 +260,7 @@ final class AppPreferences {
         static let historyRetentionMode = "historyRetentionMode"
         static let pasteFallbackEnabled = "pasteFallbackEnabled"
         static let transcriptionModel = "transcriptionModel"
+        static let recordingSafetyLimit = "recordingSafetyLimit"
         static let lastValidatedAPIKeyFingerprint = "lastValidatedAPIKeyFingerprint"
         static let lastValidationDate = "lastValidationDate"
     }
@@ -236,6 +292,11 @@ final class AppPreferences {
             defaults.set(openAITranscriptionModel.rawValue, forKey: Keys.transcriptionModel)
         }
     }
+    var recordingSafetyLimit: RecordingSafetyLimit {
+        didSet {
+            defaults.set(recordingSafetyLimit.rawValue, forKey: Keys.recordingSafetyLimit)
+        }
+    }
 
     var lastValidatedAPIKeyFingerprint: String? {
         defaults.string(forKey: Keys.lastValidatedAPIKeyFingerprint)
@@ -258,6 +319,9 @@ final class AppPreferences {
         self.openAITranscriptionModel =
             OpenAITranscriptionModel(rawValue: defaults.string(forKey: Keys.transcriptionModel) ?? "")
             ?? .gpt4oMiniTranscribe
+        self.recordingSafetyLimit =
+            RecordingSafetyLimit(rawValue: defaults.string(forKey: Keys.recordingSafetyLimit) ?? "")
+            ?? .threeMinutes
     }
 
     func persistValidatedAPIKey(_ apiKey: String, validatedAt: Date) {

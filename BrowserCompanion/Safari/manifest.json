@@ -1,14 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "Head Canon Browser Companion",
-  "description": "Developer companion for browser-aware Head Canon insertion experiments.",
+  "name": "Head Canon Safari Companion",
+  "description": "Safari Web Extension scaffold for browser-aware Head Canon insertion experiments.",
   "version": "0.1.0",
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApBYGFNwHXh7rLho/b97zEyFotzqt06qWrrYzQeo8hjreDtMJ31CoZg1u6lKZbuKq7fKIRasXjhaaRZSmWbcJB/axwJpAQfU3jmsU8mKL3ZFOjOAsvruXgdhwPnCcWn5aGf7U5vT4HUkmIjzGO64oz9qK+DOpQfk/TBTDr6Frj+WLdv2YCBklk2DaLFKhP2ZIjPti0CWEd0secDtW9HX7R4kAw7iJZYudgasR8MKtFcD98CcvDR3EEy/2/1il+r2CkEtZTWflSMOloxK/fyvgxrO0lJneckO1rgXEvOy0kFIW1Sfkl6B91BrZxNTBWPtT5A7EdTJc5ZA7LxCq9ovkIQIDAQAB",
-  "minimum_chrome_version": "120",
   "permissions": [
     "activeTab",
-    "nativeMessaging",
     "scripting",
+    "storage",
     "tabs"
   ],
   "host_permissions": [
@@ -23,7 +21,7 @@
     "type": "module"
   },
   "action": {
-    "default_title": "Head Canon Browser Companion"
+    "default_title": "Head Canon Safari Companion"
   },
   "content_scripts": [
     {

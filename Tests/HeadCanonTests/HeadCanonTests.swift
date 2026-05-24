@@ -21,6 +21,7 @@ struct HeadCanonTests {
         #expect(preferences.hotkey.displayString == "Hold Control + Option")
         #expect(preferences.selectedMicrophoneID == nil)
         #expect(preferences.openAITranscriptionModel == .gpt4oMiniTranscribe)
+        #expect(preferences.recordingSafetyLimit == .threeMinutes)
     }
 
     @Test("Preferences persist hotkey and validation cache")
@@ -35,12 +36,14 @@ struct HeadCanonTests {
 
         preferences.hotkey = .spacePushToTalk
         preferences.openAITranscriptionModel = .gpt4oTranscribe
+        preferences.recordingSafetyLimit = .fiveMinutes
         preferences.persistValidatedAPIKey("test-key", validatedAt: validationDate)
 
         let reloaded = AppPreferences(defaults: defaults)
 
         #expect(reloaded.hotkey == .spacePushToTalk)
         #expect(reloaded.openAITranscriptionModel == .gpt4oTranscribe)
+        #expect(reloaded.recordingSafetyLimit == .fiveMinutes)
         #expect(reloaded.lastValidationDate == validationDate)
         #expect(reloaded.hasCachedValidation(for: "test-key"))
         #expect(!reloaded.hasCachedValidation(for: "other-key"))
@@ -1271,6 +1274,128 @@ struct HeadCanonSecurityTests {
         let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
         #expect(persistedRecords.first?.clipboardRecovery?.transcriptCopied == true)
         #expect(persistedRecords.first?.clipboardRecovery?.reason == ClipboardRecoveryReason.insertionFailure.rawValue)
+    }
+
+    @Test("Chromium browser targets prefer the browser companion before fallback insertion")
+    @MainActor
+    func chromiumBrowserTargetsPreferBrowserCompanion() async {
+        let hotkeyManager = StubHotkeyManager()
+        let textInsertionService = RecordingTextInsertionService()
+        textInsertionService.plannedCapabilitiesOverride = TargetCapabilities(
+            applicationName: "Google Chrome",
+            bundleIdentifier: "com.google.Chrome",
+            processIdentifier: 7,
+            contextKind: .axFocusedElement,
+            capabilityProfile: .partialAXEditor,
+            browserMetadata: BrowserTargetMetadata(
+                browser: .chrome,
+                targetClass: .richEditable,
+                editorFamily: .frameworkManagedEditor,
+                verificationMode: .transcriptPresenceReadback,
+                pageOrigin: nil,
+                pageTitle: nil,
+                framePath: nil,
+                frameIdentifier: nil,
+                targetFingerprint: "AXTextArea | Composer | prompt-textarea",
+                operationID: nil,
+                focusCapturedAt: nil,
+                focusValidatedAt: nil,
+                protocolVersion: nil,
+                extensionVersion: nil
+            ),
+            role: "AXTextArea",
+            subrole: nil,
+            roleDescription: "editor",
+            title: "Composer",
+            identifier: "prompt-textarea",
+            placeholderValue: "Message ChatGPT",
+            placeholderLikelyActive: false,
+            domIdentifier: "prompt-textarea",
+            valueReadable: false,
+            valueSettable: false,
+            selectedTextRangeReadable: false,
+            selectedTextReadable: false,
+            editable: true,
+            secure: false,
+            pasteCompatible: true,
+            directInsertCompatible: false
+        )
+
+        let browserCompanionBroker = StubBrowserCompanionCommandBroker(
+            captureResult: BrowserCompanionResultEnvelope(
+                protocolVersion: BrowserCompanionProtocolVersion.current,
+                result: .targetSnapshot,
+                operationID: UUID(),
+                observedAt: Date(timeIntervalSince1970: 10),
+                target: BrowserCompanionTargetSnapshot(
+                    browser: .chrome,
+                    pageOrigin: "https://chatgpt.com",
+                    pageTitle: "ChatGPT",
+                    framePath: "0",
+                    frameIdentifier: "root",
+                    targetClass: .richEditable,
+                    editorFamily: .frameworkManagedEditor,
+                    targetFingerprint: "div | textbox | composer",
+                    editable: true,
+                    secure: false
+                ),
+                message: nil
+            ),
+            insertResult: BrowserCompanionResultEnvelope(
+                protocolVersion: BrowserCompanionProtocolVersion.current,
+                result: .unverifiedInsert,
+                operationID: UUID(),
+                observedAt: Date(timeIntervalSince1970: 11),
+                target: BrowserCompanionTargetSnapshot(
+                    browser: .chrome,
+                    pageOrigin: "https://chatgpt.com",
+                    pageTitle: "ChatGPT",
+                    framePath: "0",
+                    frameIdentifier: "root",
+                    targetClass: .richEditable,
+                    editorFamily: .frameworkManagedEditor,
+                    targetFingerprint: "div | textbox | composer",
+                    editable: true,
+                    secure: false
+                ),
+                message: nil
+            )
+        )
+        let browserMonitor = StubBrowserCompanionMonitor(
+            status: BrowserCompanionStatus(
+                checkedAt: Date(timeIntervalSince1970: 1),
+                protocolVersion: BrowserCompanionProtocolVersion.current,
+                installations: [
+                    BrowserCompanionInstallation(
+                        browser: .chrome,
+                        nativeHostManifestPath: "/tmp/local.headcanon.browser_companion.json",
+                        hostScriptPath: "/tmp/browser_companion_host.sh",
+                        hostScriptReachable: true,
+                        allowedExtensionIDs: ["abcdefghijklmnopabcdefghijklmnop"]
+                    )
+                ],
+                latestSnapshot: nil
+            )
+        )
+        let model = makeReadyModel(
+            textInsertionService: textInsertionService,
+            hotkeyManager: hotkeyManager,
+            browserCompanionMonitor: browserMonitor,
+            browserCompanionBroker: browserCompanionBroker
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(textInsertionService.insertedTexts.isEmpty)
+        #expect(model.lastInsertionAttemptReport?.chosenStrategy == .browserCompanion)
+        #expect(model.lastInsertionAttemptReport?.appliedStrategy == .browserCompanion)
+        #expect(model.lastInsertionAttemptReport?.verificationOutcome == .unverified)
+        #expect(browserCompanionBroker.captureCallCount == 1)
+        #expect(browserCompanionBroker.insertCallCount == 1)
     }
 
     @Test("Missing insertion target copies the transcript to the clipboard for recovery")
@@ -2826,12 +2951,14 @@ private func makeReadyModel(
     diagnosticsStore: any DiagnosticsStoring = NoOpDiagnosticsStore(),
     hotkeyManager: StubHotkeyManager = StubHotkeyManager(),
     clipboardWriter: any ClipboardWriting = RecordingClipboardWriter(),
+    browserCompanionMonitor: (any BrowserCompanionMonitoring)? = nil,
+    browserCompanionBroker: (any BrowserCompanionCommandBrokering)? = nil,
     diskSpaceChecker: (any DiskSpaceChecking)? = nil,
     diskSpaceReserver: (any DiskSpaceReserving)? = StubDiskSpaceReserver(),
     diskSpacePolicy: DiskSpacePolicy = .default,
     hotkeyStateProvider: @escaping (HotkeyShortcut) -> Bool = { _ in true },
     transcriptionTimeout: Duration = .seconds(30),
-    maximumRecordingDuration: Duration = .seconds(90)
+    maximumRecordingDuration: Duration? = nil
 ) -> HeadCanonModel {
     if !preferences.hasCachedValidation(for: "test-key") {
         preferences.persistValidatedAPIKey("test-key", validatedAt: Date(timeIntervalSince1970: 1_715_000_000))
@@ -2854,6 +2981,8 @@ private func makeReadyModel(
         clipboardWriter: clipboardWriter,
         diskSpaceChecker: diskSpaceChecker,
         diskSpaceReserver: diskSpaceReserver,
+        browserCompanionMonitor: browserCompanionMonitor,
+        browserCompanionBroker: browserCompanionBroker,
         diskSpacePolicy: diskSpacePolicy,
         hotkeyStateProvider: hotkeyStateProvider,
         transcriptionTimeout: transcriptionTimeout,
@@ -2907,6 +3036,44 @@ private struct StubPermissionDebugService: PermissionDebugging {
 
     func runSelfTests(using snapshot: PermissionDebugSnapshot) -> [PermissionSelfTestResult] {
         selfTests
+    }
+}
+
+private struct StubBrowserCompanionMonitor: BrowserCompanionMonitoring {
+    let status: BrowserCompanionStatus
+
+    func currentStatus() -> BrowserCompanionStatus {
+        status
+    }
+}
+
+@MainActor
+private final class StubBrowserCompanionCommandBroker: BrowserCompanionCommandBrokering {
+    let captureResult: BrowserCompanionResultEnvelope?
+    let insertResult: BrowserCompanionResultEnvelope?
+    private(set) var captureCallCount = 0
+    private(set) var insertCallCount = 0
+
+    init(
+        captureResult: BrowserCompanionResultEnvelope? = nil,
+        insertResult: BrowserCompanionResultEnvelope? = nil
+    ) {
+        self.captureResult = captureResult
+        self.insertResult = insertResult
+    }
+
+    func captureFocusedTarget(timeout: Duration) async -> BrowserCompanionResultEnvelope? {
+        captureCallCount += 1
+        return captureResult
+    }
+
+    func insertTranscript(
+        _ transcript: String,
+        target: BrowserCompanionTargetSnapshot,
+        timeout: Duration
+    ) async -> BrowserCompanionResultEnvelope? {
+        insertCallCount += 1
+        return insertResult
     }
 }
 
@@ -3149,6 +3316,7 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
     var omitExecutionVerificationOutcome = false
     var captureError: Error?
     var insertError: Error?
+    var plannedCapabilitiesOverride: TargetCapabilities?
     private var captureCallCount = 0
 
     func captureFocusedTarget() throws -> any TextInsertionTargetHandle {
@@ -3164,8 +3332,7 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
         allowPasteFallback: Bool,
         observationLabel: String
     ) throws -> InsertionAttemptReport {
-        let report = InsertionStrategyPlanner.plan(
-            capabilities: TargetCapabilities(
+        let capabilities = plannedCapabilitiesOverride ?? TargetCapabilities(
                 applicationName: "Stub App",
                 bundleIdentifier: "local.headcanon.tests.stub",
                 processIdentifier: 2,
@@ -3187,7 +3354,9 @@ private final class RecordingTextInsertionService: TextInsertionServicing {
                 secure: false,
                 pasteCompatible: true,
                 directInsertCompatible: supportsDirectInsert
-            ),
+            )
+        let report = InsertionStrategyPlanner.plan(
+            capabilities: capabilities,
             allowPasteFallback: allowPasteFallback,
             observationLabel: observationLabel
         )

@@ -25,20 +25,23 @@ What it does not do yet:
 3. Click `Load unpacked`.
 4. Select this folder:
    - `/Users/worldbuilder/Desktop/Head Canon/BrowserCompanion/Chromium`
-5. Copy the assigned extension ID.
-6. Install the native host manifest:
+5. Install the native host manifest:
 
 ```bash
-./Scripts/install_chromium_companion.sh --extension-id <copied-extension-id>
+./Scripts/install_chromium_companion.sh
 ```
 
-7. Optionally start the local browser fixtures:
+The scaffold now pins a stable local development extension ID:
+
+- `cmjkhlmckbjapkhoecamfbemddfgkjbe`
+
+6. Optionally start the local browser fixtures:
 
 ```bash
 ./Scripts/serve_browser_fixtures.sh --open
 ```
 
-8. Click the extension action while focused in a fixture field to log the focused target snapshot.
+7. Click the extension action while focused in a fixture field to log the focused target snapshot.
 
 ## Native Host Name
 

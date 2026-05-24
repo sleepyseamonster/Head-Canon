@@ -57,12 +57,17 @@ What the latest installed-app evidence says:
 - the fallback bounded path remains important, but the next implementation lane is browser insertion support rather than more generic bounded-path tuning
 
 ## Current Blockers
-1. `browser companion architecture not started`
-   - there is still no Chromium or Safari companion extension in the repo
-   - browser support remains AX-only and too coarse for `ChatGPT`, `Google`, `Gmail`, or `Docs`-style editors
-2. `browser taxonomy and diagnostics are still incomplete in the runtime`
-   - the repo can now persist browser target metadata, but the live app does not yet capture origin, frame, or extension-supplied context
-   - there is still no operation-id or page-identity enforcement in the insertion loop
+1. `browser companion lane is only partially complete`
+   - the repo now has a Chromium companion scaffold, a native-host broker, local browser fixtures, companion-aware app insertion routing, and a Safari Web Extension scaffold
+   - the Safari scaffold is not yet app-bridged or matrix-verified
+   - there is still no installed-app browser matrix evidence for `ChatGPT`, `Google Search`, `Gmail`, or iframe-backed editors
+2. `browser taxonomy and diagnostics still need more real-world evidence`
+   - the live app can now persist real extension-supplied snapshot fields such as origin, frame path, fingerprint, and protocol version
+   - support claims are still not evidence-backed until repeated installed-app runs are captured
+   - the new Chromium fixture runner proved that a forced temp-profile Chrome launch is loading the fixture page but not the unpacked extension itself:
+     - the temp profile's `Default/Preferences` contained no extension ids
+     - no fresh `latest-target.json` snapshot was written
+   - that means generic fixture automation is now blocked on a manual Chrome developer-mode or load-unpacked step, not on broker/result parsing
 3. `timeout-path defect still exists in the fallback bounded lane`
    - some requests still fail at the app-level timeout
    - that remains real work, but it is no longer the primary planning lane
@@ -110,20 +115,18 @@ What the latest installed-app evidence says:
    - `/Applications/HeadCanon.app`
    - `gpt-4o-mini-transcribe`
    - `Standard Completed Recording`
-2. Add browser-aware diagnostics and target taxonomy before changing insertion behavior further.
-3. Draft and stabilize the native app ↔ browser companion protocol with operation IDs, expiry, and target fingerprints.
-4. Scaffold the Chromium companion first.
-5. Add local browser fixtures for:
-   - `input`
-   - `textarea`
-   - `contenteditable`
-   - `iframe`
-   - `shadow DOM`
-   - secure-field negative cases
-6. Only after those pieces exist, run the first browser evidence matrix:
+2. Use the installed Chromium companion path to capture real matrix evidence:
    - generic browser textarea
    - `ChatGPT`
    - `Google Search`
+   - `Gmail`
+   - one iframe-backed editor
+   - prerequisite: manually load the unpacked Chromium companion in Chrome so the extension is actually active
+3. Tighten browser-specific truth-state evidence:
+   - verify `operationID`, origin, frame path, and fingerprint land in persisted diagnostics for real browser turns
+   - confirm browser-companion inserts stay honest as `verifiedInsert`, `unverifiedInsert`, `expired`, or fallback
+4. Bridge the Safari scaffold into the same app-facing protocol and truth-state path used by Chromium.
+5. After the browser matrix is real, return to the timeout-path defect in the bounded fallback lane.
    - `Gmail`
    - one iframe-backed editor
 7. Return to the timeout/Codex lane after browser observability exists, not before.

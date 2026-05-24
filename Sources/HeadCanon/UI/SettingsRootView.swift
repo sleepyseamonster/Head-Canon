@@ -173,6 +173,28 @@ struct SettingsRootView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
+
+                    Picker(
+                        "Maximum Recording Length",
+                        selection: Binding(
+                            get: { model.preferences.recordingSafetyLimit },
+                            set: { model.preferences.recordingSafetyLimit = $0 }
+                        )
+                    ) {
+                        ForEach(RecordingSafetyLimit.allCases) { limit in
+                            Text(limit.title).tag(limit)
+                        }
+                    }
+
+                    Text(model.preferences.recordingSafetyLimit.detail)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("Head Canon automatically finalizes when this limit is reached, even if the hotkey still looks held. Increase it if you like to dictate long bursts.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.top, 6)
             }

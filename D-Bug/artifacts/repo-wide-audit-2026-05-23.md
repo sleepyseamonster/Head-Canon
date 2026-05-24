@@ -77,3 +77,19 @@ Repo: `/Users/worldbuilder/Desktop/Head Canon`
 ## Bottom Line
 
 The root issue from earlier stuck-recording windows is not present in the current live state. The next fixable repo-wide risks are diagnostic truthfulness, dirty-worktree discipline, and keeping the recovery UI and browser-companion experiments from regressing the now-healthy bounded dictation loop.
+
+## 2026-05-23 18:45 Follow-Up
+
+- The two reported post-build failures were not transcription failures. Diagnostics classified both as `recordingFailed` with `recordingStop` message `Head Canon could not find the recorded audio file.`
+- Root-shaped cause: AVFoundation could report recording completion before the expected `.m4a` was visible at the output URL, so Head Canon could fail before transcription was ever attempted.
+- Fix applied: audio finalization now waits briefly for the output file, accepts only non-empty files, and can recover the newest matching recording file from the recording directory before tearing down the capture session.
+- Related test/tooling fix: Browser Companion native host now honors the process `HOME` environment when writing app-support snapshots, keeping its artifact test isolated.
+- Verification: `swift test` passed with `120 tests in 16 suites`; rebuilt and installed `/Applications/HeadCanon.app` with CDHash `4eaf0a1bf28e9572271810bb19280a4f1ea018c9`.
+
+## 2026-05-23 18:55 Disk Full Follow-Up
+
+- A later `Disk Full` failure was not real storage exhaustion. `df` showed about `42 GiB` free, Head Canon disk readiness was `Healthy`, and the reserve was still present.
+- The attempt lasted about `30s` with no hotkey release recorded, then failed at `recordingStop` before transcription. This points to a stuck/missed modifier-release recording reaching an AVFoundation recorder failure cliff.
+- Fix applied: default missed-release safety finalization is now `25s` instead of `90s`, so the app should finalize and transcribe before the recorder reaches that failure window.
+- Fix applied: if the recorder reports a disk-space style error while Head Canon disk readiness is healthy, the user-facing copy now treats it as an audio-capture/session failure instead of instructing the user to free disk space.
+- Verification: `swift test` passed with `121 tests in 16 suites`; rebuilt and installed `/Applications/HeadCanon.app` with CDHash `71b6b2055cb0a995fc0d18ab48744b146dee6130`; live diagnostics after relaunch show `Ready`, `Audio Capture Recording: No`, `Hotkey Physically Pressed: No`, and disk readiness `Healthy`.
