@@ -26,16 +26,32 @@ struct BrowserCompanionInstallation: Codable, Equatable, Sendable, Identifiable 
     }
 }
 
+struct BrowserCompanionObservedSnapshot: Codable, Equatable, Sendable {
+    let browser: BrowserHostApplication
+    let observedAt: Date
+    let pageOrigin: String?
+    let pageTitle: String?
+    let framePath: String?
+    let frameIdentifier: String?
+    let targetClass: BrowserTargetClass
+    let editorFamily: BrowserEditorFamily
+    let targetFingerprint: String?
+    let editable: Bool
+    let secure: Bool
+}
+
 struct BrowserCompanionStatus: Codable, Equatable, Sendable {
     let checkedAt: Date
     let protocolVersion: Int
     let installations: [BrowserCompanionInstallation]
+    let latestSnapshot: BrowserCompanionObservedSnapshot?
 
     static var empty: BrowserCompanionStatus {
         BrowserCompanionStatus(
             checkedAt: .distantPast,
             protocolVersion: BrowserCompanionProtocolVersion.current,
-            installations: []
+            installations: [],
+            latestSnapshot: nil
         )
     }
 
@@ -88,7 +104,8 @@ struct BrowserCompanionMonitor: BrowserCompanionMonitoring {
         return BrowserCompanionStatus(
             checkedAt: Date(),
             protocolVersion: BrowserCompanionProtocolVersion.current,
-            installations: installations
+            installations: installations,
+            latestSnapshot: latestSnapshot()
         )
     }
 
@@ -164,5 +181,22 @@ struct BrowserCompanionMonitor: BrowserCompanionMonitoring {
         return origin
             .replacingOccurrences(of: "chrome-extension://", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private func latestSnapshot() -> BrowserCompanionObservedSnapshot? {
+        let snapshotURL = homeDirectoryURL
+            .appendingPathComponent("Library/Application Support/HeadCanon/browser-companion", isDirectory: true)
+            .appendingPathComponent("latest-target.json", isDirectory: false)
+
+        guard
+            fileManager.fileExists(atPath: snapshotURL.path),
+            let data = try? Data(contentsOf: snapshotURL)
+        else {
+            return nil
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(BrowserCompanionObservedSnapshot.self, from: data)
     }
 }
