@@ -964,6 +964,24 @@ final class HeadCanonModel {
         let browserInstallations = browserCompanionStatus.installations.map { installation in
             "- \(installation.title): \(installation.isInstalled ? "Installed" : "Missing") · Host reachable: \(installation.hostScriptReachable ? "Yes" : "No") · Extensions: \(installation.allowedExtensionIDs.isEmpty ? "None" : installation.allowedExtensionIDs.joined(separator: ", "))"
         }
+        let browserSnapshotLines: [String]
+        if let snapshot = browserCompanionStatus.latestSnapshot {
+            browserSnapshotLines = [
+                "- Browser: \(snapshot.browser.title)",
+                "- Observed at: \(snapshot.observedAt.formatted(date: .abbreviated, time: .standard))",
+                "- Origin: \(snapshot.pageOrigin ?? "Unknown")",
+                "- Page title: \(snapshot.pageTitle ?? "Unknown")",
+                "- Frame path: \(snapshot.framePath ?? "Unknown")",
+                "- Frame identifier: \(snapshot.frameIdentifier ?? "Unknown")",
+                "- Target class: \(snapshot.targetClass.title)",
+                "- Editor family: \(snapshot.editorFamily.title)",
+                "- Fingerprint: \(snapshot.targetFingerprint ?? "Unknown")",
+                "- Editable: \(snapshot.editable ? "Yes" : "No")",
+                "- Secure: \(snapshot.secure ? "Yes" : "No")",
+            ]
+        } else {
+            browserSnapshotLines = ["- None captured yet"]
+        }
 
         return (
             lines
@@ -972,6 +990,9 @@ final class HeadCanonModel {
             + [""]
             + ["Browser Companion Installations:"]
             + (browserInstallations.isEmpty ? ["- None checked yet"] : browserInstallations)
+            + [""]
+            + ["Browser Companion Latest Snapshot:"]
+            + browserSnapshotLines
             + [""]
             + recordingDiagnosticReportLines
             + [""]
@@ -2721,6 +2742,21 @@ final class HeadCanonModel {
                     nativeHostManifestPath: installation.nativeHostManifestPath
                 )
             },
+            browserCompanionLatestSnapshot: browserCompanionStatus.latestSnapshot.map { snapshot in
+                LiveBrowserCompanionSnapshotRecord(
+                    browser: snapshot.browser.rawValue,
+                    observedAt: snapshot.observedAt,
+                    pageOrigin: snapshot.pageOrigin,
+                    pageTitle: snapshot.pageTitle,
+                    framePath: snapshot.framePath,
+                    frameIdentifier: snapshot.frameIdentifier,
+                    targetClass: snapshot.targetClass.rawValue,
+                    editorFamily: snapshot.editorFamily.rawValue,
+                    targetFingerprint: snapshot.targetFingerprint,
+                    editable: snapshot.editable,
+                    secure: snapshot.secure
+                )
+            },
             audioCaptureIsRecording: audioCaptureService.isRecording,
             hotkeyDisplayString: preferences.hotkey.displayString,
             hotkeyPhysicallyPressed: hotkeyStateProvider(preferences.hotkey),
@@ -2932,17 +2968,21 @@ final class HeadCanonModel {
         let installation = browserCompanionStatus.installations.first { installation in
             installation.browser == browserMetadata.browser
         }
+        let snapshot = browserCompanionStatus.latestSnapshot
+        let canUseSnapshot = snapshot.map {
+            $0.browser == browserMetadata.browser && Date().timeIntervalSince($0.observedAt) < 300
+        } ?? false
 
         return BrowserTargetMetadata(
             browser: browserMetadata.browser,
-            targetClass: browserMetadata.targetClass,
-            editorFamily: browserMetadata.editorFamily,
+            targetClass: canUseSnapshot ? snapshot?.targetClass ?? browserMetadata.targetClass : browserMetadata.targetClass,
+            editorFamily: canUseSnapshot ? snapshot?.editorFamily ?? browserMetadata.editorFamily : browserMetadata.editorFamily,
             verificationMode: browserMetadata.verificationMode,
-            pageOrigin: browserMetadata.pageOrigin,
-            pageTitle: browserMetadata.pageTitle,
-            framePath: browserMetadata.framePath,
-            frameIdentifier: browserMetadata.frameIdentifier,
-            targetFingerprint: browserMetadata.targetFingerprint,
+            pageOrigin: canUseSnapshot ? snapshot?.pageOrigin : browserMetadata.pageOrigin,
+            pageTitle: canUseSnapshot ? snapshot?.pageTitle : browserMetadata.pageTitle,
+            framePath: canUseSnapshot ? snapshot?.framePath : browserMetadata.framePath,
+            frameIdentifier: canUseSnapshot ? snapshot?.frameIdentifier : browserMetadata.frameIdentifier,
+            targetFingerprint: canUseSnapshot ? snapshot?.targetFingerprint ?? browserMetadata.targetFingerprint : browserMetadata.targetFingerprint,
             operationID: attemptID,
             focusCapturedAt: phase == .captured ? report.observedAt : browserMetadata.focusCapturedAt,
             focusValidatedAt: phase == .validated ? report.observedAt : browserMetadata.focusValidatedAt,

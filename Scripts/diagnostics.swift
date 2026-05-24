@@ -108,6 +108,20 @@ struct LiveBrowserCompanionInstallationRecord: Decodable {
     let nativeHostManifestPath: String?
 }
 
+struct LiveBrowserCompanionSnapshotRecord: Decodable {
+    let browser: String
+    let observedAt: Date
+    let pageOrigin: String?
+    let pageTitle: String?
+    let framePath: String?
+    let frameIdentifier: String?
+    let targetClass: String
+    let editorFamily: String
+    let targetFingerprint: String?
+    let editable: Bool
+    let secure: Bool
+}
+
 struct LiveStateRecord: Decodable {
     let schemaVersion: Int
     let updatedAt: Date
@@ -123,6 +137,7 @@ struct LiveStateRecord: Decodable {
     let browserCompanionStatus: String?
     let browserCompanionDetail: String?
     let browserCompanionInstallations: [LiveBrowserCompanionInstallationRecord]?
+    let browserCompanionLatestSnapshot: LiveBrowserCompanionSnapshotRecord?
     let audioCaptureIsRecording: Bool
     let hotkeyDisplayString: String
     let hotkeyPhysicallyPressed: Bool
@@ -475,6 +490,21 @@ func printLive(_ record: LiveStateRecord) {
     print("Disk Reserved Space: \(record.diskReservedSpace ?? "Unknown")")
     print("Browser Companion Status: \(record.browserCompanionStatus ?? "Unknown")")
     print("Browser Companion Detail: \(record.browserCompanionDetail ?? "Unknown")")
+    if let snapshot = record.browserCompanionLatestSnapshot {
+        print("Browser Snapshot Browser: \(snapshot.browser)")
+        print("Browser Snapshot Observed: \(snapshot.observedAt.formatted(date: .abbreviated, time: .standard))")
+        print("Browser Snapshot Origin: \(snapshot.pageOrigin ?? "Unknown")")
+        print("Browser Snapshot Title: \(snapshot.pageTitle ?? "Unknown")")
+        print("Browser Snapshot Frame Path: \(snapshot.framePath ?? "Unknown")")
+        print("Browser Snapshot Frame Identifier: \(snapshot.frameIdentifier ?? "Unknown")")
+        print("Browser Snapshot Target Class: \(snapshot.targetClass)")
+        print("Browser Snapshot Editor Family: \(snapshot.editorFamily)")
+        print("Browser Snapshot Fingerprint: \(snapshot.targetFingerprint ?? "Unknown")")
+        print("Browser Snapshot Editable: \(snapshot.editable ? "Yes" : "No")")
+        print("Browser Snapshot Secure: \(snapshot.secure ? "Yes" : "No")")
+    } else {
+        print("Browser Snapshot: None")
+    }
     print("Audio Capture Recording: \(record.audioCaptureIsRecording ? "Yes" : "No")")
     print("Hotkey: \(record.hotkeyDisplayString)")
     print("Hotkey Physically Pressed: \(record.hotkeyPhysicallyPressed ? "Yes" : "No")")

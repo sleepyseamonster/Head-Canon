@@ -27,6 +27,20 @@ struct LiveBrowserCompanionInstallationRecord: Codable, Equatable, Sendable {
     let nativeHostManifestPath: String?
 }
 
+struct LiveBrowserCompanionSnapshotRecord: Codable, Equatable, Sendable {
+    let browser: String
+    let observedAt: Date
+    let pageOrigin: String?
+    let pageTitle: String?
+    let framePath: String?
+    let frameIdentifier: String?
+    let targetClass: String
+    let editorFamily: String
+    let targetFingerprint: String?
+    let editable: Bool
+    let secure: Bool
+}
+
 struct LiveDiagnosticsRecord: Codable, Equatable, Sendable {
     static let schemaVersion = 1
 
@@ -44,6 +58,7 @@ struct LiveDiagnosticsRecord: Codable, Equatable, Sendable {
     let browserCompanionStatus: String?
     let browserCompanionDetail: String?
     let browserCompanionInstallations: [LiveBrowserCompanionInstallationRecord]
+    let browserCompanionLatestSnapshot: LiveBrowserCompanionSnapshotRecord?
     let audioCaptureIsRecording: Bool
     let hotkeyDisplayString: String
     let hotkeyPhysicallyPressed: Bool
