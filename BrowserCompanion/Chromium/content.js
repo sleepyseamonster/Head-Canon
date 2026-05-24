@@ -1,4 +1,6 @@
 const PROTOCOL_VERSION = 1;
+let lastPublishedFingerprint = null;
+let lastPublishedAt = 0;
 
 function nextOperationId() {
   return crypto.randomUUID();
@@ -131,6 +133,31 @@ function captureFocusedTargetSnapshot(operationID = nextOperationId()) {
     },
     message: editable ? "Focused browser target captured." : "Focused element is not currently recognized as editable."
   };
+}
+
+function publishFocusedTargetSnapshot() {
+  const snapshot = captureFocusedTargetSnapshot(nextOperationId());
+  const fingerprint = snapshot.target?.targetFingerprint ?? null;
+  const now = Date.now();
+
+  if (snapshot.result !== "targetSnapshot") {
+    void chrome.runtime.sendMessage({
+      event: "focusedTargetUnavailable",
+      snapshot
+    }).catch(() => {});
+    return;
+  }
+
+  if (fingerprint === lastPublishedFingerprint && now - lastPublishedAt < 1500) {
+    return;
+  }
+
+  lastPublishedFingerprint = fingerprint;
+  lastPublishedAt = now;
+  void chrome.runtime.sendMessage({
+    event: "focusedTargetUpdate",
+    snapshot
+  }).catch(() => {});
 }
 
 function insertIntoTextControl(element, text) {
@@ -285,4 +312,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       });
       return false;
   }
+});
+
+document.addEventListener("focusin", () => {
+  publishFocusedTargetSnapshot();
+}, true);
+
+window.addEventListener("load", () => {
+  setTimeout(() => {
+    publishFocusedTargetSnapshot();
+  }, 250);
 });

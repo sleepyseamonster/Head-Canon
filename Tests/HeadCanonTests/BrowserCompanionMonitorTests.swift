@@ -68,4 +68,46 @@ struct BrowserCompanionMonitorTests {
         #expect(status.statusTitle == "Not Installed")
         #expect(status.installations.contains(where: { $0.browser == .chrome }))
     }
+
+    @Test("Browser companion monitor reads the latest stored browser snapshot")
+    func browserCompanionMonitorReadsLatestStoredSnapshot() throws {
+        let fileManager = FileManager.default
+        let tempDirectory = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fileManager.createDirectory(at: tempDirectory, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: tempDirectory)
+        }
+
+        let snapshotDirectory = tempDirectory
+            .appendingPathComponent("Library/Application Support/HeadCanon/browser-companion", isDirectory: true)
+        try fileManager.createDirectory(at: snapshotDirectory, withIntermediateDirectories: true)
+
+        let snapshotURL = snapshotDirectory.appendingPathComponent("latest-target.json", isDirectory: false)
+        let snapshot = BrowserCompanionObservedSnapshot(
+            browser: .chrome,
+            observedAt: Date(timeIntervalSince1970: 2_000),
+            pageOrigin: "http://127.0.0.1:47831",
+            pageTitle: "Head Canon Browser Fixtures",
+            framePath: "0",
+            frameIdentifier: "root",
+            targetClass: .richEditable,
+            editorFamily: .contentEditable,
+            targetFingerprint: "div | textbox | Fixture Composer",
+            editable: true,
+            secure: false
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let payload = try encoder.encode(snapshot)
+        try payload.write(to: snapshotURL, options: [.atomic])
+
+        let monitor = BrowserCompanionMonitor(
+            fileManager: fileManager,
+            homeDirectoryURL: tempDirectory
+        )
+        let status = monitor.currentStatus()
+
+        #expect(status.latestSnapshot == snapshot)
+    }
 }
