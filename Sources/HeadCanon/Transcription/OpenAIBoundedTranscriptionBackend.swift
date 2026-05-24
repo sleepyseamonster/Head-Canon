@@ -216,7 +216,7 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
         let inspectedBody = Self.inspectPlainTextResponse(data, response: response)
         let text = inspectedBody.text
         guard !text.isEmpty else {
-            throw TranscriptionBackendError.invalidResponse(
+            throw TranscriptionBackendError.emptyTranscript(
                 Self.failureContext(
                     requestMode: requestMode,
                     fellBackFromStreaming: fellBackFromStreaming,
@@ -248,8 +248,8 @@ struct OpenAIBoundedTranscriptionBackend: TranscriptionBackend {
     }
 
     private static func configureTranscriptionSession(_ configuration: URLSessionConfiguration) {
-        configuration.timeoutIntervalForRequest = 30
-        configuration.timeoutIntervalForResource = 45
+        configuration.timeoutIntervalForRequest = 90
+        configuration.timeoutIntervalForResource = 120
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpMaximumConnectionsPerHost = 1

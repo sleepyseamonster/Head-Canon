@@ -759,6 +759,14 @@ struct SettingsRootView: View {
             diagnosticsFact("Placeholder Handling", report.placeholderHandlingOutcome?.title ?? "Unknown")
             diagnosticsFact("Strategy Reason", report.strategyReason)
 
+            if let browserMetadata = report.capabilities.browserMetadata {
+                diagnosticsFact("Browser Host", browserMetadata.browser.title)
+                diagnosticsFact("Browser Target Class", browserMetadata.targetClass.title)
+                diagnosticsFact("Browser Editor Family", browserMetadata.editorFamily.title)
+                diagnosticsFact("Browser Verification Mode", browserMetadata.verificationMode.title)
+                diagnosticsFact("Browser Fingerprint", browserMetadata.targetFingerprint ?? "Unknown")
+            }
+
             if let predictedFailureClass = report.predictedFailureClass {
                 diagnosticsFact("Predicted Failure", predictedFailureClass.title)
             }

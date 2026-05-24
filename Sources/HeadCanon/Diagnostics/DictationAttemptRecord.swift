@@ -19,6 +19,7 @@ enum DictationAttemptTruthState: String, Codable, Equatable, Identifiable {
     case transcriptionTransportFailure
     case transcriptionTimedOut
     case transcriptionCanceled
+    case noSpeechDetected
     case transcriptionFailed
     case insertionFailed
 
@@ -48,6 +49,8 @@ enum DictationAttemptTruthState: String, Codable, Equatable, Identifiable {
             "Transcription Timed Out"
         case .transcriptionCanceled:
             "Transcription Canceled"
+        case .noSpeechDetected:
+            "No Speech Detected"
         case .transcriptionFailed:
             "Transcription Failed"
         case .insertionFailed:
@@ -79,6 +82,8 @@ enum DictationAttemptTruthState: String, Codable, Equatable, Identifiable {
             "Head Canon stopped waiting for the transcription request before it completed."
         case .transcriptionCanceled:
             "Head Canon canceled the in-flight transcription request."
+        case .noSpeechDetected:
+            "Head Canon did not detect enough speech to produce a transcript."
         case .transcriptionFailed:
             "Head Canon received a transcription failure that was not a clean transport timeout."
         case .insertionFailed:
@@ -181,6 +186,7 @@ struct DictationAttemptInsertionRecord: Codable, Equatable {
     let observationLabel: String
     let applicationName: String
     let bundleIdentifier: String?
+    let browserContext: BrowserTargetMetadata?
     let target: String
     let contextKind: String
     let capabilityProfile: String
@@ -214,7 +220,7 @@ struct DictationAttemptClipboardRecoveryRecord: Codable, Equatable {
 }
 
 struct DictationAttemptRecord: Codable, Equatable {
-    static let schemaVersion = 3
+    static let schemaVersion = 4
 
     let schemaVersion: Int
     let attemptID: UUID

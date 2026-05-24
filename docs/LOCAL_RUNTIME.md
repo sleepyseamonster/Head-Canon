@@ -35,6 +35,21 @@ When the app identity changes, macOS can treat it like a new app and ask for Mic
   - if no stable signing identity exists and the app is already installed, this opens the existing installed app instead of replacing it
   - if no stable signing identity exists and the app is not installed yet, the script now stops and requires an explicit signing setup step
 
+## Browser Companion Scaffold
+
+The Chromium browser companion currently ships as a local unpacked-extension scaffold.
+
+Developer workflow:
+
+1. Load `/Users/worldbuilder/Desktop/Head Canon/BrowserCompanion/Chromium` as an unpacked extension.
+2. Copy the assigned extension ID.
+3. Install the native host manifest with:
+   - `./Scripts/install_chromium_companion.sh --extension-id <extension-id>`
+4. Serve the local fixture page with:
+   - `./Scripts/serve_browser_fixtures.sh --open`
+
+This browser lane is still a scaffold. The installed app does not yet drive the companion end to end.
+
 ## Stable Signing
 
 Stable macOS permission persistence across updates requires one consistent signing identity for every rebuild.

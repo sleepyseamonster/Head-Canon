@@ -17,6 +17,8 @@ Files:
   Structured formats for latency logs and artifacts.
 - [bin](/Users/worldbuilder/Desktop/Head%20Canon/Latency/bin)
   Latency helper scripts for repeatable capture and reporting.
+  `capture_latency_snapshot.sh` records both app diagnostics and `networkQuality` output in each new artifact.
+  `latency_decision_support.swift` derives bottleneck and failure-pattern interpretation from recent diagnostics plus internet-quality measurements.
 - [artifacts](/Users/worldbuilder/Desktop/Head%20Canon/Latency/artifacts)
   Saved benchmark reports, timing breakdowns, and experiment summaries.
 - [logs](/Users/worldbuilder/Desktop/Head%20Canon/Latency/logs)

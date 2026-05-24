@@ -19,6 +19,14 @@ struct LiveRecordingTimingRecord: Codable, Equatable, Sendable {
     let stopTrigger: String?
 }
 
+struct LiveBrowserCompanionInstallationRecord: Codable, Equatable, Sendable {
+    let browser: String
+    let installed: Bool
+    let hostScriptReachable: Bool
+    let allowedExtensionIDs: [String]
+    let nativeHostManifestPath: String?
+}
+
 struct LiveDiagnosticsRecord: Codable, Equatable, Sendable {
     static let schemaVersion = 1
 
@@ -33,6 +41,9 @@ struct LiveDiagnosticsRecord: Codable, Equatable, Sendable {
     let diskFreeSpace: String?
     let diskReserveStatus: String?
     let diskReservedSpace: String?
+    let browserCompanionStatus: String?
+    let browserCompanionDetail: String?
+    let browserCompanionInstallations: [LiveBrowserCompanionInstallationRecord]
     let audioCaptureIsRecording: Bool
     let hotkeyDisplayString: String
     let hotkeyPhysicallyPressed: Bool

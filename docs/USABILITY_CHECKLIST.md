@@ -10,6 +10,7 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Track `TextEdit`, `Codex`, and browser targets separately during latency work
 - [ ] Lock one bounded baseline before comparing anything else
 - [ ] Preserve one known-good bounded snapshot for rollback
+- [ ] Keep browser-companion experiments separate from the bounded rollback baseline
 - [ ] For any failure, classify exactly one stage:
   - `permission/readiness`
   - `hotkey delivery`
@@ -31,6 +32,15 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] The app does not show `Ready` while disk readiness is blocked
 - [ ] Low-disk warning copy does not hide a harder blocker such as permissions or API key setup
 - [ ] If the cache reserve feature is enabled, the app reports the reserve truthfully in live diagnostics or settings
+
+## Browser Companion Readiness
+- [ ] The current browser support mode is known before the run starts:
+  - AX fallback only
+  - Chromium companion
+  - Safari companion
+- [ ] Companion protocol version is visible in diagnostics when browser support is active
+- [ ] Missing or stale browser companion state does not block fallback dictation outside the browser lane
+- [ ] Browser companion install and site-access state are explicit when browser support is expected
 
 ## Backend Readiness
 - [ ] An OpenAI API key is stored
@@ -70,6 +80,9 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] The latest attempt is also available through a fast-path artifact such as `latest.json`
 - [ ] The latest attempt includes request mode, fallback usage, status, request ID, and processing metadata
 - [ ] The latest attempt or live state includes disk readiness status and free-space context when available
+- [ ] Browser attempts include browser identity, target class, editor family, and verification mode
+- [ ] Browser attempts include origin/title/frame and protocol metadata when available
+- [ ] Browser attempts include enough context to distinguish wrong-page, wrong-editor, and unreadable-editor cases
 - [ ] Each record includes a schema version and session identifier
 - [ ] Default diagnostics do not retain raw transcript text
 - [ ] Diagnostics writing failure does not block dictation
@@ -102,12 +115,26 @@ It is for proving the installed app is actually usable for real dictation before
 ## Soak Test Pass
 - [ ] Run `30-50` warm short-phrase turns in `Codex`
 - [ ] Run `10` turns in `TextEdit`
-- [ ] Run `5` turns in one browser target
+- [ ] Run `5` turns in one generic browser target
 - [ ] Do not treat a `Codex`-heavy run as a full app-matrix benchmark
 - [ ] Group failures by stage
 - [ ] Group results by app class
 - [ ] Record the dominant failure reason, if any
 - [ ] Preserve one known-good summary artifact before changing the model or retry policy
+
+## Browser Fixture Pass
+- [ ] Run the local browser fixture page for:
+  - `input`
+  - `textarea`
+  - `contenteditable`
+  - `iframe`
+  - `shadow DOM`
+  - secure-field negative case
+- [ ] Verify the chosen insertion strategy by target class
+- [ ] Verify exact readback on plain controls
+- [ ] Verify transcript-presence readback on rich editors
+- [ ] Verify expiry when tab, page, or focused editor changed before insertion
+- [ ] Verify duplicate-insert protection on retry
 
 ## Timeout Hardening
 - [ ] App-level transcription timeout cancels the in-flight request cleanly
@@ -146,6 +173,15 @@ It is for proving the installed app is actually usable for real dictation before
 - [ ] Record whether the focused target changed between response completion and paste completion
 - [ ] The result is explainable without guessing
 - [ ] The insertion path does not impose a large unexplained fixed wait
+
+## Browser Matrix
+- [ ] Run a generic browser textarea target
+- [ ] Run `ChatGPT`
+- [ ] Run `Google Search`
+- [ ] Run `Gmail`
+- [ ] Run one iframe-backed editor
+- [ ] Treat `Google Docs` as a hard-target lane unless evidence shows it is already stable
+- [ ] Do not mark a browser target supported unless it lands in one explicit truth state
 
 ## Failure Safety
 - [ ] If setup is incomplete, the app shows a specific blocker

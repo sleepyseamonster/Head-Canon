@@ -16,6 +16,7 @@
 - As of 2026-05-22 06:57 -0700, `/Applications/HeadCanon.app` includes stricter hotkey physical-state reconciliation: modifier/key watchdogs require both combined-session and HID hardware state to agree that the hotkey is still held, so a stale session flag alone cannot keep the app recording.
 - As of 2026-05-22 07:02 -0700, `/Applications/HeadCanon.app` retries one empty `200 OK` text/plain transcription response before surfacing failure, which covers the observed short-turn empty-body response at `06:55`.
 - As of 2026-05-22, the user accepts `Codex` insertion being classified as `unverifiedInsert`: Codex does not expose reliable AX text readback, so the app should preserve/copy recovery text but should not treat successful unverified paste as a transcription failure.
+- As of 2026-05-23, repo-wide audit found the installed app healthy after rebuild: live diagnostics are ready with no stuck recording/transcription, the latest 20 attempts are successful `Codex` `unverifiedInsert` turns, and the remaining repo-level risks are dirty-worktree discipline, diagnostic truthfulness around `noSpeechDetected`, and keeping Browser Companion experimental until reviewed.
 
 ## Current Suspects
 - `Codex` insertion routing may be over-constrained by focus-safety requirements in app-level paste paths.

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Head Canon Browser Fixtures</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f5f1e8;
+        --panel: #fffaf1;
+        --ink: #1f1d1a;
+        --muted: #6b6257;
+        --accent: #b34d2e;
+        --accent-soft: #f2d7c8;
+        --line: #d8ccbf;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        background:
+          radial-gradient(circle at top left, #fff5db 0, transparent 36%),
+          linear-gradient(180deg, #efe4d2 0%, var(--bg) 50%, #efe7db 100%);
+        color: var(--ink);
+      }
+
+      main {
+        max-width: 1100px;
+        margin: 0 auto;
+        padding: 40px 20px 72px;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: clamp(2rem, 4vw, 3.25rem);
+        line-height: 1;
+      }
+
+      p.lead {
+        max-width: 760px;
+        margin: 0 0 28px;
+        color: var(--muted);
+        font-size: 1.05rem;
+      }
+
+      .grid {
+        display: grid;
+        gap: 18px;
+        grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      }
+
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: color-mix(in srgb, var(--panel) 88%, white);
+        box-shadow: 0 18px 48px rgba(54, 39, 22, 0.08);
+        padding: 20px;
+      }
+
+      .card h2 {
+        margin: 0 0 8px;
+        font-size: 1.1rem;
+      }
+
+      .card p {
+        margin: 0 0 14px;
+        color: var(--muted);
+        font-size: 0.95rem;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: 600;
+      }
+
+      input,
+      textarea,
+      .editor-surface,
+      .status {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 14px 16px;
+        font: inherit;
+        background: white;
+        color: var(--ink);
+      }
+
+      textarea,
+      .editor-surface {
+        min-height: 144px;
+        resize: vertical;
+      }
+
+      .editor-surface[contenteditable="true"] {
+        outline: none;
+      }
+
+      .status {
+        background: var(--accent-soft);
+        color: #6c2d19;
+        min-height: 96px;
+      }
+
+      iframe {
+        width: 100%;
+        min-height: 260px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: white;
+      }
+
+      button {
+        appearance: none;
+        border: 0;
+        border-radius: 999px;
+        background: var(--accent);
+        color: white;
+        padding: 10px 16px;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .actions {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin: 18px 0 0;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Head Canon Browser Fixtures</h1>
+      <p class="lead">
+        Use this page to exercise the first browser-companion editor classes before trying live sites.
+        The fixtures below intentionally cover plain controls, rich editors, iframe editors, shadow DOM,
+        and secure-field negatives.
+      </p>
+
+      <div class="grid">
+        <section class="card">
+          <h2>Plain Input</h2>
+          <p>Use this for `plainTextControl` and exact readback verification.</p>
+          <label for="fixture-search">Search</label>
+          <input id="fixture-search" type="search" placeholder="Search the fixture page">
+        </section>
+
+        <section class="card">
+          <h2>Textarea</h2>
+          <p>Use this for `textarea` behavior and replacement-range insertion.</p>
+          <label for="fixture-textarea">Notes</label>
+          <textarea id="fixture-textarea" placeholder="Dictate a note into this textarea"></textarea>
+        </section>
+
+        <section class="card">
+          <h2>Rich Contenteditable</h2>
+          <p>Use this for generic rich-editor insertion without exact value readback.</p>
+          <label for="fixture-composer">Composer</label>
+          <div
+            id="fixture-composer"
+            class="editor-surface"
+            role="textbox"
+            aria-label="Fixture Composer"
+            contenteditable="true"
+            data-headcanon-editor="contenteditable"
+          >Click here and dictate into this rich editor.</div>
+        </section>
+
+        <section class="card">
+          <h2>Shadow DOM Editor</h2>
+          <p>The inner target lives inside a shadow root and should still be discoverable.</p>
+          <headcanon-shadow-editor></headcanon-shadow-editor>
+        </section>
+
+        <section class="card">
+          <h2>Iframe Editor</h2>
+          <p>The iframe is same-origin so the companion can walk into it during local testing.</p>
+          <iframe src="./iframe-editor.html" title="Iframe Fixture Editor"></iframe>
+        </section>
+
+        <section class="card">
+          <h2>Secure Field Negative</h2>
+          <p>This should remain blocked and unsupported.</p>
+          <label for="fixture-password">Password</label>
+          <input id="fixture-password" type="password" placeholder="Do not insert here">
+        </section>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="focus-textarea">Focus Textarea</button>
+        <button type="button" id="focus-composer">Focus Rich Editor</button>
+      </div>
+
+      <h2 style="margin-top: 28px;">Fixture Status</h2>
+      <div id="fixture-status" class="status">Ready.</div>
+    </main>
+
+    <script src="./shadow-editor.js"></script>
+    <script src="./fixture.js"></script>
+  </body>
+</html>

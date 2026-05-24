@@ -711,6 +711,7 @@ final class HeadCanonModel {
     var permissionDebugSnapshot: PermissionDebugSnapshot = .empty
     var permissionSelfTestResults: [PermissionSelfTestResult] = []
     var diskSpaceReadiness: DiskSpaceReadiness?
+    var browserCompanionStatus: BrowserCompanionStatus = .empty
     @ObservationIgnored private var hasPresentedSetupWindow = false
     @ObservationIgnored private var hasPresentedLaunchWindow = false
     @ObservationIgnored private var activationObserver: NSObjectProtocol?
@@ -725,6 +726,7 @@ final class HeadCanonModel {
     @ObservationIgnored private var activeTranscriptionAttemptID: UUID?
     @ObservationIgnored private var currentAttemptID: UUID?
     @ObservationIgnored private let diagnosticsSessionID = UUID()
+    @ObservationIgnored private let minimumTranscriptionDuration: TimeInterval = 1.0
     @ObservationIgnored private let maxTransientTranscriptionAttempts = 2
     @ObservationIgnored private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "local.headcanon.app",
@@ -733,6 +735,7 @@ final class HeadCanonModel {
     @ObservationIgnored private let hotkeyStateProvider: (HotkeyShortcut) -> Bool
     @ObservationIgnored private let transcriptionTimeout: Duration
     @ObservationIgnored private let maximumRecordingDuration: Duration
+    @ObservationIgnored private let browserCompanionMonitor: any BrowserCompanionMonitoring
 
     init(
         preferences: AppPreferences = AppPreferences(),
@@ -748,6 +751,7 @@ final class HeadCanonModel {
         clipboardWriter: (any ClipboardWriting)? = nil,
         diskSpaceChecker: (any DiskSpaceChecking)? = nil,
         diskSpaceReserver: (any DiskSpaceReserving)? = nil,
+        browserCompanionMonitor: (any BrowserCompanionMonitoring)? = nil,
         diskSpacePolicy: DiskSpacePolicy = .default,
         hotkeyStateProvider: @escaping (HotkeyShortcut) -> Bool = { $0.isPressedInCurrentSession() },
         transcriptionTimeout: Duration = .seconds(30),
@@ -766,6 +770,7 @@ final class HeadCanonModel {
         self.hotkeyManager = hotkeyManager ?? HotkeyManager()
         self.statusOverlay = statusOverlay ?? StatusOverlayController.shared
         self.clipboardWriter = clipboardWriter ?? SystemClipboardWriter()
+        self.browserCompanionMonitor = browserCompanionMonitor ?? BrowserCompanionMonitor()
         self.diskSpaceReadinessService = DiskSpaceReadinessService(
             checker: diskSpaceChecker ?? VolumeDiskSpaceChecker(),
             reserver: diskSpaceReserver ?? DiskSpaceReserveManager(),
@@ -946,6 +951,8 @@ final class HeadCanonModel {
             "Disk free space: \(diskSpaceReadiness?.freeSpaceLabel ?? "Unknown")",
             "Disk reserve: \(diskSpaceReadiness?.reservation.status.title ?? "Unknown")",
             "Disk reserved space: \(diskSpaceReadiness?.reservation.reservedSpaceLabel ?? "Unknown")",
+            "Browser companion status: \(browserCompanionStatus.statusTitle)",
+            "Browser companion detail: \(browserCompanionStatus.statusDetail)",
             "Last failure stage: \(lastFailureStage?.title ?? "None")",
             "Last truth state: \(lastAttemptTruthState?.title ?? "None")",
             "Last event: \(lastDiagnosticEvent?.summary ?? "None")",
@@ -954,11 +961,17 @@ final class HeadCanonModel {
         let selfTests = permissionSelfTestResults.map { result in
             "- \(result.kind.title): \(result.status.title) — \(result.summary) (\(result.detail))"
         }
+        let browserInstallations = browserCompanionStatus.installations.map { installation in
+            "- \(installation.title): \(installation.isInstalled ? "Installed" : "Missing") · Host reachable: \(installation.hostScriptReachable ? "Yes" : "No") · Extensions: \(installation.allowedExtensionIDs.isEmpty ? "None" : installation.allowedExtensionIDs.joined(separator: ", "))"
+        }
 
         return (
             lines
             + ["Self-tests:"]
             + (selfTests.isEmpty ? ["- None run yet"] : selfTests)
+            + [""]
+            + ["Browser Companion Installations:"]
+            + (browserInstallations.isEmpty ? ["- None checked yet"] : browserInstallations)
             + [""]
             + recordingDiagnosticReportLines
             + [""]
@@ -1064,8 +1077,32 @@ final class HeadCanonModel {
             "- Placeholder handling: \(report.placeholderHandlingOutcome?.title ?? "Unknown")",
             "- Strategy reason: \(report.strategyReason)",
             "- Predicted failure class: \(failurePrediction)",
+        ] + browserDiagnosticLines(for: report.capabilities.browserMetadata) + [
             "- Rejected strategies:",
         ] + rejected
+    }
+
+    private func browserDiagnosticLines(for metadata: BrowserTargetMetadata?) -> [String] {
+        guard let metadata else {
+            return []
+        }
+
+        return [
+            "- Browser host: \(metadata.browser.title)",
+            "- Browser target class: \(metadata.targetClass.title)",
+            "- Browser editor family: \(metadata.editorFamily.title)",
+            "- Browser verification mode: \(metadata.verificationMode.title)",
+            "- Browser origin: \(metadata.pageOrigin ?? "Unknown")",
+            "- Browser page title: \(metadata.pageTitle ?? "Unknown")",
+            "- Browser frame path: \(metadata.framePath ?? "Unknown")",
+            "- Browser frame identifier: \(metadata.frameIdentifier ?? "Unknown")",
+            "- Browser fingerprint: \(metadata.targetFingerprint ?? "Unknown")",
+            "- Browser operation ID: \(metadata.operationID?.uuidString ?? "Unknown")",
+            "- Browser focus captured at: \(formattedTimestamp(metadata.focusCapturedAt))",
+            "- Browser focus validated at: \(formattedTimestamp(metadata.focusValidatedAt))",
+            "- Browser protocol version: \(metadata.protocolVersion.map(String.init) ?? "Unknown")",
+            "- Browser extension version: \(metadata.extensionVersion ?? "Unknown")",
+        ]
     }
 
     var microphoneSetupAction: SetupAction? {
@@ -1201,6 +1238,7 @@ final class HeadCanonModel {
         refreshPermissions()
         refreshMicrophones()
         refreshDiskSpaceReadiness()
+        refreshBrowserCompanionStatus()
         await refreshAPIKeyState(
             validateRemotely: validateAPIKeyRemotely,
             presentSetupWindow: presentSetupWindow
@@ -1311,6 +1349,21 @@ final class HeadCanonModel {
         }
     }
 
+    func refreshBrowserCompanionStatus() {
+        let previousStatus = browserCompanionStatus
+        browserCompanionStatus = browserCompanionMonitor.currentStatus()
+
+        guard previousStatus != browserCompanionStatus else {
+            return
+        }
+
+        recordDiagnosticEvent(
+            "Browser companion status updated: \(browserCompanionStatus.statusDetail)",
+            stage: .insertion,
+            isFailure: false
+        )
+    }
+
     func saveAPIKey(_ apiKey: String) async {
         do {
             let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1411,7 +1464,7 @@ final class HeadCanonModel {
                 apiKeyState = .invalid("OpenAI returned an unexpected status code: \(statusCode).")
                 lastValidationDate = nil
                 preferences.clearValidatedAPIKeyState()
-            case .invalidResponse:
+            case .invalidResponse, .emptyTranscript:
                 apiKeyState = .invalid("OpenAI returned an invalid validation response.")
                 lastValidationDate = nil
                 preferences.clearValidatedAPIKeyState()
@@ -1981,6 +2034,19 @@ final class HeadCanonModel {
                 stage: .recordingStop,
                 isFailure: false
             )
+            guard recordingIsLongEnoughForTranscription(input) else {
+                let message = "Recording was too short to transcribe reliably. Hold the hotkey a little longer and try again."
+                lastAttemptTruthState = .noSpeechDetected
+                recordFailure(.transcription, message: message)
+                persistCurrentAttempt(
+                    terminalState: .failed,
+                    truthState: .noSpeechDetected,
+                    failureStage: .transcription,
+                    failureMessage: message
+                )
+                setWorkflowStatus(.failed, errorMessage: message)
+                return
+            }
             let attemptID = UUID()
             activeTranscriptionAttemptID = attemptID
             await transcribeAndInsert(
@@ -2118,7 +2184,7 @@ final class HeadCanonModel {
             setWorkflowStatus(.startingTranscription)
             lastRecordingAttemptDiagnostics = (lastRecordingAttemptDiagnostics ?? .empty).withTranscriptionRequestStarted(at: Date())
             recordDiagnosticEvent(
-                "Transcription request started with a \(Int(transcriptionTimeout.timeInterval.rounded())) second timeout.",
+                "Transcription request started with a \(Int(transcriptionTimeout(for: input).timeInterval.rounded())) second timeout.",
                 stage: .transcription,
                 isFailure: false
             )
@@ -2644,6 +2710,17 @@ final class HeadCanonModel {
             diskFreeSpace: diskSpaceReadiness?.freeSpaceLabel,
             diskReserveStatus: diskSpaceReadiness?.reservation.status.title,
             diskReservedSpace: diskSpaceReadiness?.reservation.reservedSpaceLabel,
+            browserCompanionStatus: browserCompanionStatus.statusTitle,
+            browserCompanionDetail: browserCompanionStatus.statusDetail,
+            browserCompanionInstallations: browserCompanionStatus.installations.map { installation in
+                LiveBrowserCompanionInstallationRecord(
+                    browser: installation.browser.rawValue,
+                    installed: installation.isInstalled,
+                    hostScriptReachable: installation.hostScriptReachable,
+                    allowedExtensionIDs: installation.allowedExtensionIDs,
+                    nativeHostManifestPath: installation.nativeHostManifestPath
+                )
+            },
             audioCaptureIsRecording: audioCaptureService.isRecording,
             hotkeyDisplayString: preferences.hotkey.displayString,
             hotkeyPhysicallyPressed: hotkeyStateProvider(preferences.hotkey),
@@ -2684,6 +2761,11 @@ final class HeadCanonModel {
                 logger.error("Failed to persist diagnostics record: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    private enum BrowserReportPhase {
+        case captured
+        case validated
     }
 
     private func makePersistentAttemptRecord(
@@ -2764,6 +2846,11 @@ final class HeadCanonModel {
                     observationLabel: report.observationLabel,
                     applicationName: report.capabilities.applicationName,
                     bundleIdentifier: report.capabilities.bundleIdentifier,
+                    browserContext: enrichedBrowserContext(
+                        for: report,
+                        attemptID: attemptID,
+                        phase: .captured
+                    ),
                     target: report.capabilities.targetLabel,
                     contextKind: report.capabilities.contextKind.rawValue,
                     capabilityProfile: report.capabilities.capabilityProfile.rawValue,
@@ -2791,6 +2878,11 @@ final class HeadCanonModel {
                     observationLabel: report.observationLabel,
                     applicationName: report.capabilities.applicationName,
                     bundleIdentifier: report.capabilities.bundleIdentifier,
+                    browserContext: enrichedBrowserContext(
+                        for: report,
+                        attemptID: attemptID,
+                        phase: .validated
+                    ),
                     target: report.capabilities.targetLabel,
                     contextKind: report.capabilities.contextKind.rawValue,
                     capabilityProfile: report.capabilities.capabilityProfile.rawValue,
@@ -2825,6 +2917,37 @@ final class HeadCanonModel {
                     reason: recovery.reason.rawValue
                 )
             }
+        )
+    }
+
+    private func enrichedBrowserContext(
+        for report: InsertionAttemptReport,
+        attemptID: UUID,
+        phase: BrowserReportPhase
+    ) -> BrowserTargetMetadata? {
+        guard let browserMetadata = report.capabilities.browserMetadata else {
+            return nil
+        }
+
+        let installation = browserCompanionStatus.installations.first { installation in
+            installation.browser == browserMetadata.browser
+        }
+
+        return BrowserTargetMetadata(
+            browser: browserMetadata.browser,
+            targetClass: browserMetadata.targetClass,
+            editorFamily: browserMetadata.editorFamily,
+            verificationMode: browserMetadata.verificationMode,
+            pageOrigin: browserMetadata.pageOrigin,
+            pageTitle: browserMetadata.pageTitle,
+            framePath: browserMetadata.framePath,
+            frameIdentifier: browserMetadata.frameIdentifier,
+            targetFingerprint: browserMetadata.targetFingerprint,
+            operationID: attemptID,
+            focusCapturedAt: phase == .captured ? report.observedAt : browserMetadata.focusCapturedAt,
+            focusValidatedAt: phase == .validated ? report.observedAt : browserMetadata.focusValidatedAt,
+            protocolVersion: installation?.isInstalled == true ? browserCompanionStatus.protocolVersion : nil,
+            extensionVersion: nil
         )
     }
 
@@ -2888,6 +3011,8 @@ final class HeadCanonModel {
             context
         case .invalidResponse(let context):
             context
+        case .emptyTranscript(let context):
+            context
         case .invalidAPIKey, .serializationFailure, .timeout, .notImplemented:
             nil
         }
@@ -2916,6 +3041,8 @@ final class HeadCanonModel {
             .setupBlocked
         case .networkUnavailable:
             .transcriptionTransportFailure
+        case .emptyTranscript:
+            .noSpeechDetected
         case .unexpectedResponse, .invalidResponse, .serializationFailure, .notImplemented:
             .transcriptionFailed
         case .timeout:
@@ -3056,6 +3183,14 @@ final class HeadCanonModel {
         return contentType.isEmpty || contentType.contains("text/plain")
     }
 
+    private func recordingIsLongEnoughForTranscription(_ input: BoundedAudioInput) -> Bool {
+        guard let duration = input.duration else {
+            return true
+        }
+
+        return duration >= minimumTranscriptionDuration
+    }
+
     private func retryDiagnosticSummary(after error: TranscriptionBackendError, attempt: Int) -> String {
         switch error {
         case .invalidResponse:
@@ -3086,9 +3221,19 @@ final class HeadCanonModel {
         }
     }
 
+    private func transcriptionTimeout(for input: BoundedAudioInput) -> Duration {
+        let baseSeconds = transcriptionTimeout.timeInterval
+        guard baseSeconds >= 1, let duration = input.duration else {
+            return transcriptionTimeout
+        }
+
+        let dynamicSeconds = min(75, max(baseSeconds, duration * 2 + 15))
+        return .milliseconds(Int((dynamicSeconds * 1000).rounded()))
+    }
+
     private func transcribeWithTimeout(_ input: BoundedAudioInput, apiKey: String) async throws -> TranscriptionResult {
         let backend = transcriptionBackend
-        let timeout = transcriptionTimeout
+        let timeout = transcriptionTimeout(for: input)
 
         let transcriptionTask = Task { @MainActor [backend] in
             try await backend.transcribe(input, apiKey: apiKey)

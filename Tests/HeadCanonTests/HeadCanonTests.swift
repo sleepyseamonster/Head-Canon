@@ -317,7 +317,7 @@ struct HeadCanonTranscriptionBackendTests {
                 apiKey: "test-key"
             )
             Issue.record("Expected the backend to reject the empty response body.")
-        } catch let TranscriptionBackendError.invalidResponse(context) {
+        } catch let TranscriptionBackendError.emptyTranscript(context) {
             #expect(context?.httpStatusCode == 200)
             #expect(context?.transportFailureStage == .readingResponseBody)
             #expect(context?.responseBodyByteCount == 0)
@@ -325,7 +325,7 @@ struct HeadCanonTranscriptionBackendTests {
             #expect(context?.responseBodyTrimmedCharacterCount == 0)
             #expect(context?.responseContentLengthBytes == 0)
         } catch {
-            Issue.record("Expected invalidResponse, received \(String(describing: error)).")
+            Issue.record("Expected emptyTranscript, received \(String(describing: error)).")
         }
     }
 
@@ -1646,6 +1646,26 @@ struct HeadCanonSecurityTests {
         #expect(failedLiveRecord?.activeTranscriptionAttemptID == nil)
     }
 
+    @Test("Long recordings get an extended transcription timeout")
+    @MainActor
+    func longRecordingsGetExtendedTranscriptionTimeout() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        audioCaptureService.recordedDuration = 25
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .inserted)
+        #expect(model.diagnosticEvents.contains(where: { $0.summary.contains("65 second timeout") }))
+    }
+
     @Test("Failed transcription records transport diagnostics")
     @MainActor
     func failedTranscriptionRecordsTransportDiagnostics() async {
@@ -1743,6 +1763,93 @@ struct HeadCanonSecurityTests {
         #expect(persistedRecords.first?.backend.responseBodyUTF8Decodable == true)
         #expect(persistedRecords.first?.backend.responseBodyTrimmedCharacterCount == 0)
         #expect(persistedRecords.first?.backend.responseContentLengthBytes == 0)
+    }
+
+    @Test("Too-short recordings are not sent to transcription")
+    @MainActor
+    func tooShortRecordingsAreNotSentToTranscription() async {
+        let hotkeyManager = StubHotkeyManager()
+        let audioCaptureService = StubAudioCaptureService()
+        audioCaptureService.recordedDuration = 0.39
+        let backend = SequencedTranscriptionBackend(results: [
+            .success(
+                TranscriptionResult(
+                    text: "should not upload",
+                    backendID: "sequenced",
+                    duration: nil,
+                    responseMetadata: nil
+                )
+            ),
+        ])
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let model = makeReadyModel(
+            audioCaptureService: audioCaptureService,
+            transcriptionBackend: backend,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(model.lastAttemptTruthState == .noSpeechDetected)
+        #expect(model.lastFailureStage == .transcription)
+        #expect(backend.transcribeCallCount == 0)
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.truthState == .noSpeechDetected)
+        #expect(persistedRecords.first?.audio.clipDurationMS == 390)
+    }
+
+    @Test("Empty provider transcript is classified as no speech")
+    @MainActor
+    func emptyProviderTranscriptIsClassifiedAsNoSpeech() async {
+        let hotkeyManager = StubHotkeyManager()
+        let diagnosticsStore = RecordingDiagnosticsStore()
+        let backend = FailingTranscriptionBackend(
+            error: .emptyTranscript(
+                TranscriptionFailureContext(
+                    requestMode: .standardCompletedRecording,
+                    fellBackFromStreaming: false,
+                    httpStatusCode: 200,
+                    requestID: "req_empty_transcript",
+                    openAIProcessingMS: 549,
+                    contentType: "text/plain; charset=utf-8",
+                    responseHeadersReceivedMS: 892,
+                    transportFailureStage: .readingResponseBody,
+                    networkErrorDomain: nil,
+                    networkErrorCode: nil,
+                    networkErrorCodeName: nil,
+                    responseBodyByteCount: 1,
+                    responseBodyUTF8Decodable: true,
+                    responseBodyTrimmedCharacterCount: 0,
+                    responseContentLengthBytes: 1
+                )
+            )
+        )
+        let model = makeReadyModel(
+            transcriptionBackend: backend,
+            diagnosticsStore: diagnosticsStore,
+            hotkeyManager: hotkeyManager
+        )
+
+        await model.bootstrap()
+        hotkeyManager.press()
+        hotkeyManager.release()
+        await waitForWorkflowCompletion(model)
+
+        #expect(model.workflowStatus == .failed)
+        #expect(model.lastAttemptTruthState == .noSpeechDetected)
+        #expect(model.lastErrorMessage == "No speech was detected in the recording.")
+        #expect(model.lastRecordingAttemptDiagnostics?.transcriptionResponseBodyByteCount == 1)
+
+        let persistedRecords = await diagnosticsStore.waitForRecordCount(1)
+        #expect(persistedRecords.first?.truthState == .noSpeechDetected)
+        #expect(persistedRecords.first?.backend.requestID == "req_empty_transcript")
+        #expect(persistedRecords.first?.backend.responseBodyByteCount == 1)
     }
 
     @Test("Transient transcription request failure retries once and inserts only once")
@@ -3448,6 +3555,7 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
             observationLabel: "Release-Time Context",
             applicationName: "TextEdit",
             bundleIdentifier: "com.apple.TextEdit",
+            browserContext: nil,
             target: "Document",
             contextKind: InsertionContextKind.axFocusedElement.rawValue,
             capabilityProfile: ApplicationCapabilityProfile.nativeAXStrong.rawValue,
@@ -3473,6 +3581,7 @@ private func sampleAttemptRecord() -> DictationAttemptRecord {
             observationLabel: "Insert-Time Context",
             applicationName: "TextEdit",
             bundleIdentifier: "com.apple.TextEdit",
+            browserContext: nil,
             target: "Document",
             contextKind: InsertionContextKind.axFocusedElement.rawValue,
             capabilityProfile: ApplicationCapabilityProfile.nativeAXStrong.rawValue,

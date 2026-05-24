@@ -31,6 +31,8 @@ What exists now:
 - manual recovery through `Copy Last Transcript`
 - one guarded retry for transient transport failures
 - one guarded retry for empty `200 OK` transcription responses
+- first-pass browser taxonomy and companion-protocol scaffolding in the repo
+- browser-aware diagnostics fields for target class, editor family, verification mode, and extension protocol metadata
 
 Accepted limitation:
 
@@ -52,33 +54,33 @@ What the latest installed-app evidence says:
 - older failure windows were split between hard transcription timeouts and `Codex` insertion safety blocks
 - later fixes addressed stale transcription transport, empty transcription responses, stuck recording recovery, and recovery actions
 - the strongest recent run set is still mostly `Codex` warm turns, so the current numbers should not be treated as a complete app-matrix result yet
-- the immediate next question is not model choice; it is whether timeout cancellation and `Codex` focus-drift fixes can stabilize the bounded path without adding mess
+- the fallback bounded path remains important, but the next implementation lane is browser insertion support rather than more generic bounded-path tuning
 
 ## Current Blockers
-1. `timeout-path defect`
-   - some requests still fail at the app-level `30s` timeout
-   - the in-flight request path needs explicit cancellation rather than more retry layering
-2. `codex verification limitation`
-   - `Codex` can transcribe and paste successfully while still reporting `unverifiedInsert`
-   - this is accepted unless the text is actually missing or the truth state becomes a real failure
-3. `model decision not yet locked`
-   - `AGENTS.md` still names `gpt-4o-transcribe` as the initial priority, but the current healthy default is `gpt-4o-mini-transcribe`
-   - that should become an explicit measured decision
-4. `architecture decision still pending`
-   - it is not yet clear whether the bounded path is “done enough” or whether realtime/local backend work is still worth the complexity
-5. `rollback discipline still implicit`
-   - the docs need to keep treating the current bounded baseline as a known-good snapshot
-   - any retry, model, or architecture experiment should be able to fall back to that state cleanly
-6. `installed-app disk-readiness verification still pending`
-   - the repo now blocks low-disk starts and surfaces warnings, but the next installed-app pass should explicitly verify those states from `/Applications/HeadCanon.app`
+1. `browser companion architecture not started`
+   - there is still no Chromium or Safari companion extension in the repo
+   - browser support remains AX-only and too coarse for `ChatGPT`, `Google`, `Gmail`, or `Docs`-style editors
+2. `browser taxonomy and diagnostics are still incomplete in the runtime`
+   - the repo can now persist browser target metadata, but the live app does not yet capture origin, frame, or extension-supplied context
+   - there is still no operation-id or page-identity enforcement in the insertion loop
+3. `timeout-path defect still exists in the fallback bounded lane`
+   - some requests still fail at the app-level timeout
+   - that remains real work, but it is no longer the primary planning lane
+4. `rollback discipline still implicit`
+   - browser work must land beside the current bounded baseline, not replace it
+   - any browser experiment should preserve the existing AX/paste fallback path cleanly
+5. `support policy is not evidence-backed yet`
+   - the repo still lacks a browser matrix, local browser fixtures, and explicit support claims by target class
+6. `model decision not yet locked`
+   - `AGENTS.md` still names `gpt-4o-transcribe` as the initial priority, but the healthy default remains `gpt-4o-mini-transcribe`
 
 ## Rules For The Next Pass
 1. Test only `/Applications/HeadCanon.app`.
 2. Do not test `dist/HeadCanon.app`.
-3. Preserve the working `TextEdit` path while improving `Codex`.
+3. Preserve the working `TextEdit` path and the current bounded fallback while browser support lands beside it.
 4. Use the persistent diagnostics log as the source of truth, not screenshots.
-5. Optimize for `p95` and failure rate now, not just `p50`.
-6. Keep the stable bounded path separate from realtime or local-backend experiments.
+5. Optimize for `p95` and failure rate, but keep browser evidence capture ahead of site-specific heuristics.
+6. Keep the stable bounded path separate from both browser-companion work and realtime/local-backend experiments.
 7. Every failure must be classified into exactly one stage:
    - `permission/readiness`
    - `hotkey delivery`
@@ -93,44 +95,47 @@ What the latest installed-app evidence says:
    - current free space
    - whether the app reported `Healthy`, `Low`, or `Blocked`
    - whether a pre-start block persisted to diagnostics cleanly when exercised
+9. For browser attempts, persist target class, editor family, verification mode, and browser identity even if origin or frame data are not available yet.
+10. No browser target is considered supported unless it can land in one explicit truth state:
+   - `verifiedInsert`
+   - `unverifiedInsert`
+   - `insertionFailed`
+   - `blockedByPermissionsOrSetup`
+   - `expiredDueToFocusOrPageChange`
+   - `unsupportedTarget`
+11. Do not stop at “scaffold complete.” Keep moving until the execution-plan stop condition is met or a hard external blocker requires user input.
 
 ## Immediate Next Steps
-1. Lock the current bounded baseline:
+1. Keep the current bounded baseline locked as the rollback path:
    - `/Applications/HeadCanon.app`
    - `gpt-4o-mini-transcribe`
    - `Standard Completed Recording`
-2. Fix timeout cancellation cleanly and retest the bounded path.
-3. Treat successful `Codex` `unverifiedInsert` as acceptable; only investigate Codex further when text is missing or diagnostics show a failed truth state.
-4. After those fixes, run the longer installed-app soak test:
-   - `30-50` warm short-phrase turns in `Codex`
-   - `10` turns in `TextEdit`
-   - `5` turns in one browser target
-5. Use `Scripts/diagnostics.swift` to capture:
-   - success rate
-   - `request -> response p50`
-   - `request -> response p95`
-   - `release -> inserted p50`
-   - `release -> inserted p95`
-   - dominant failure reason
-6. If the bounded path still looks healthy after those fixes, run the controlled bounded model comparison between:
-   - `gpt-4o-mini-transcribe`
-   - `gpt-4o-transcribe`
-7. Include one transcript-quality note in the model comparison so speed is not the only decision input.
-8. Only then decide whether to:
-   - keep the bounded path and stop
-   - prototype realtime transcription
-   - prototype `whisper.cpp`
+2. Add browser-aware diagnostics and target taxonomy before changing insertion behavior further.
+3. Draft and stabilize the native app ↔ browser companion protocol with operation IDs, expiry, and target fingerprints.
+4. Scaffold the Chromium companion first.
+5. Add local browser fixtures for:
+   - `input`
+   - `textarea`
+   - `contenteditable`
+   - `iframe`
+   - `shadow DOM`
+   - secure-field negative cases
+6. Only after those pieces exist, run the first browser evidence matrix:
+   - generic browser textarea
+   - `ChatGPT`
+   - `Google Search`
+   - `Gmail`
+   - one iframe-backed editor
+7. Return to the timeout/Codex lane after browser observability exists, not before.
 
 ## Definition Of A Good Next Checkpoint
 The next checkpoint should include:
 
 - one locked installed bundle path
-- one clear bounded baseline definition
-- one explicit result for the timeout-cancellation fix
-- one explicit result for the `Codex` focus-drift fix
-- one explicit installed-app disk-readiness result with diagnostics evidence
-- one longer run summary by app class
-- `p50`, `p95`, and failure rate from the persistent diagnostics log
-- one note on whether transcript quality stayed acceptable
-- one explicit statement about whether the remaining pain is acceptable bounded-path variance or a reason to escalate architecture work
+- one clear bounded rollback baseline definition
+- one explicit browser taxonomy in code and docs
+- one persisted browser-aware diagnostics schema with CLI visibility
+- one protocol scaffold for the future browser companion
+- one note on what browser evidence is still missing from the live app
+- one explicit statement about whether the next step is Chromium scaffolding, local fixture work, or timeout-lane fallback hardening
 - one next step derived from that evidence

@@ -11,6 +11,16 @@ SAFE_LABEL="$(printf '%s' "$LABEL" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9
 STAMP="$(date +%Y-%m-%dT%H-%M-%S%z)"
 ARTIFACT_PATH="$LATENCY_DIR/artifacts/benchmark-${STAMP}-${SAFE_LABEL}.md"
 CAPTURED_AT="$(date +%Y-%m-%dT%H:%M:%S%z)"
+NETWORK_QUALITY_FILE="$(mktemp)"
+trap 'rm -f "$NETWORK_QUALITY_FILE"' EXIT
+
+capture_network_quality() {
+  if command -v networkQuality >/dev/null 2>&1; then
+    networkQuality 2>&1
+  else
+    printf '%s\n' "networkQuality is not available on this machine."
+  fi
+}
 
 LATEST_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" latest)"
 LIVE_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" live)"
@@ -19,6 +29,9 @@ SUMMARY_MODEL_50_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" summary-
 SUMMARY_APP_50_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" summary-by-app-class 50)"
 SUMMARY_FAILURE_50_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" summary-by-failure 50)"
 RECENT_10_OUTPUT="$(swift "$REPO_ROOT/Scripts/diagnostics.swift" recent 10)"
+NETWORK_QUALITY_OUTPUT="$(capture_network_quality)"
+printf '%s\n' "$NETWORK_QUALITY_OUTPUT" >"$NETWORK_QUALITY_FILE"
+DECISION_SUPPORT_OUTPUT="$(swift "$LATENCY_DIR/bin/latency_decision_support.swift" --window 20 --network-quality-file "$NETWORK_QUALITY_FILE")"
 
 cat >"$ARTIFACT_PATH" <<EOF
 date: $(date +%Y-%m-%d)
@@ -108,6 +121,28 @@ swift Scripts/diagnostics.swift recent 10
 Observed:
 \`\`\`text
 ${RECENT_10_OUTPUT}
+\`\`\`
+
+## Internet Quality
+Command:
+\`\`\`bash
+networkQuality
+\`\`\`
+
+Observed:
+\`\`\`text
+${NETWORK_QUALITY_OUTPUT}
+\`\`\`
+
+## Decision Support
+Command:
+\`\`\`bash
+swift Latency/bin/latency_decision_support.swift --window 20 --network-quality-file <captured-network-quality>
+\`\`\`
+
+Observed:
+\`\`\`text
+${DECISION_SUPPORT_OUTPUT}
 \`\`\`
 EOF
 

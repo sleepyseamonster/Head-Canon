@@ -42,6 +42,7 @@ struct TranscriptRecord: Decodable {
 struct InsertionRecord: Decodable {
     let applicationName: String
     let bundleIdentifier: String?
+    let browserContext: BrowserContextRecord?
     let capabilityProfile: String?
     let target: String?
     let chosenStrategy: String
@@ -51,6 +52,23 @@ struct InsertionRecord: Decodable {
     let placeholderLikelyActive: Bool?
     let placeholderAmbiguousValueDetected: Bool?
     let placeholderHandlingOutcome: String?
+}
+
+struct BrowserContextRecord: Decodable {
+    let browser: String
+    let targetClass: String
+    let editorFamily: String
+    let verificationMode: String
+    let pageOrigin: String?
+    let pageTitle: String?
+    let framePath: String?
+    let frameIdentifier: String?
+    let targetFingerprint: String?
+    let operationID: UUID?
+    let focusCapturedAt: Date?
+    let focusValidatedAt: Date?
+    let protocolVersion: Int?
+    let extensionVersion: String?
 }
 
 struct FailureRecord: Decodable {
@@ -82,6 +100,14 @@ struct LiveTimingRecord: Decodable {
     let stopTrigger: String?
 }
 
+struct LiveBrowserCompanionInstallationRecord: Decodable {
+    let browser: String
+    let installed: Bool
+    let hostScriptReachable: Bool
+    let allowedExtensionIDs: [String]
+    let nativeHostManifestPath: String?
+}
+
 struct LiveStateRecord: Decodable {
     let schemaVersion: Int
     let updatedAt: Date
@@ -94,6 +120,9 @@ struct LiveStateRecord: Decodable {
     let diskFreeSpace: String?
     let diskReserveStatus: String?
     let diskReservedSpace: String?
+    let browserCompanionStatus: String?
+    let browserCompanionDetail: String?
+    let browserCompanionInstallations: [LiveBrowserCompanionInstallationRecord]?
     let audioCaptureIsRecording: Bool
     let hotkeyDisplayString: String
     let hotkeyPhysicallyPressed: Bool
@@ -211,6 +240,10 @@ func insertionRecord(for record: AttemptRecord) -> InsertionRecord? {
 func appClass(for record: AttemptRecord) -> AppClass {
     guard let insertion = insertionRecord(for: record) else {
         return .unknown
+    }
+
+    if insertion.browserContext != nil {
+        return .browser
     }
 
     if let bundleIdentifier = insertion.bundleIdentifier?.lowercased(),
@@ -396,6 +429,22 @@ func printLatest(_ record: AttemptRecord) {
         if let target = insertion.target {
             print("Target: \(target)")
         }
+        if let browserContext = insertion.browserContext {
+            print("Browser: \(browserContext.browser)")
+            print("Browser Target Class: \(browserContext.targetClass)")
+            print("Browser Editor Family: \(browserContext.editorFamily)")
+            print("Browser Verification Mode: \(browserContext.verificationMode)")
+            print("Browser Origin: \(browserContext.pageOrigin ?? "Unknown")")
+            print("Browser Page Title: \(browserContext.pageTitle ?? "Unknown")")
+            print("Browser Frame Path: \(browserContext.framePath ?? "Unknown")")
+            print("Browser Frame Identifier: \(browserContext.frameIdentifier ?? "Unknown")")
+            print("Browser Fingerprint: \(browserContext.targetFingerprint ?? "Unknown")")
+            print("Browser Operation ID: \(browserContext.operationID?.uuidString ?? "Unknown")")
+            print("Browser Focus Captured: \(browserContext.focusCapturedAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+            print("Browser Focus Validated: \(browserContext.focusValidatedAt?.formatted(date: .omitted, time: .standard) ?? "Unknown")")
+            print("Browser Protocol Version: \(browserContext.protocolVersion.map(String.init) ?? "Unknown")")
+            print("Browser Extension Version: \(browserContext.extensionVersion ?? "Unknown")")
+        }
         print("Planned Strategy: \(insertion.chosenStrategy)")
         print("Applied Strategy: \(insertion.appliedStrategy ?? "Unknown")")
         print("Verification: \(insertion.verificationOutcome ?? "Unknown")")
@@ -424,6 +473,8 @@ func printLive(_ record: LiveStateRecord) {
     print("Disk Free Space: \(record.diskFreeSpace ?? "Unknown")")
     print("Disk Reserve: \(record.diskReserveStatus ?? "Unknown")")
     print("Disk Reserved Space: \(record.diskReservedSpace ?? "Unknown")")
+    print("Browser Companion Status: \(record.browserCompanionStatus ?? "Unknown")")
+    print("Browser Companion Detail: \(record.browserCompanionDetail ?? "Unknown")")
     print("Audio Capture Recording: \(record.audioCaptureIsRecording ? "Yes" : "No")")
     print("Hotkey: \(record.hotkeyDisplayString)")
     print("Hotkey Physically Pressed: \(record.hotkeyPhysicallyPressed ? "Yes" : "No")")
@@ -460,6 +511,14 @@ func printLive(_ record: LiveStateRecord) {
             print("- \(event.timestamp.formatted(date: .omitted, time: .standard)) | \(stage) | \(event.isFailure ? "failure" : "info") | \(event.summary)")
         }
     }
+
+    if let installations = record.browserCompanionInstallations, !installations.isEmpty {
+        print("Browser Companion Installations:")
+        for installation in installations {
+            let extensions = installation.allowedExtensionIDs.isEmpty ? "none" : installation.allowedExtensionIDs.joined(separator: ",")
+            print("- \(installation.browser) | installed \(installation.installed ? "yes" : "no") | host \(installation.hostScriptReachable ? "reachable" : "missing") | extensions \(extensions) | manifest \(installation.nativeHostManifestPath ?? "-")")
+        }
+    }
 }
 
 func printRecent(_ records: [AttemptRecord]) {
@@ -476,7 +535,10 @@ func printRecent(_ records: [AttemptRecord]) {
         let appliedStrategy = insertionRecord(for: record)?.appliedStrategy ?? insertionRecord(for: record)?.chosenStrategy ?? "unknown"
         let netCode = record.backend.networkErrorCodeName ?? record.backend.networkErrorCode.map(String.init) ?? "-"
         let headerMS = responseHeadersDurationMS(for: record).map(String.init) ?? "?"
-        print("\(record.completedAt.formatted(date: .omitted, time: .standard)) | \(failureLabel(for: record)) | req \(requestMS) ms | hdr \(headerMS) ms | total \(insertionMS) ms | chars \(characterCount) | \(appClass(for: record).rawValue) | \(appName) | \(appliedStrategy) | net \(netCode)")
+        let browserLabel = insertionRecord(for: record)?.browserContext.map {
+            "\($0.browser):\($0.targetClass):\($0.editorFamily)"
+        } ?? "-"
+        print("\(record.completedAt.formatted(date: .omitted, time: .standard)) | \(failureLabel(for: record)) | req \(requestMS) ms | hdr \(headerMS) ms | total \(insertionMS) ms | chars \(characterCount) | \(appClass(for: record).rawValue) | \(appName) | \(appliedStrategy) | browser \(browserLabel) | net \(netCode)")
     }
 }
 

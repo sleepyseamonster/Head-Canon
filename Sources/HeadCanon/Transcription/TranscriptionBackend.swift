@@ -99,6 +99,7 @@ enum TranscriptionBackendError: LocalizedError {
     case networkUnavailable(TranscriptionFailureContext? = nil)
     case unexpectedResponse(Int, TranscriptionFailureContext? = nil)
     case invalidResponse(TranscriptionFailureContext? = nil)
+    case emptyTranscript(TranscriptionFailureContext? = nil)
     case serializationFailure
     case timeout(TimeInterval)
     case notImplemented
@@ -113,6 +114,8 @@ enum TranscriptionBackendError: LocalizedError {
             "The transcription service returned status code \(statusCode)."
         case .invalidResponse:
             "The transcription response was empty or could not be decoded."
+        case .emptyTranscript:
+            "No speech was detected in the recording."
         case .serializationFailure:
             "Head Canon could not build the transcription request."
         case .timeout(let seconds):

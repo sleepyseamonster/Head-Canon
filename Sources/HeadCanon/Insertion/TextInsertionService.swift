@@ -155,6 +155,7 @@ struct TargetCapabilities: Equatable {
     let processIdentifier: pid_t
     let contextKind: InsertionContextKind
     let capabilityProfile: ApplicationCapabilityProfile
+    let browserMetadata: BrowserTargetMetadata?
     let role: String?
     let subrole: String?
     let roleDescription: String?
@@ -180,6 +181,7 @@ struct TargetCapabilities: Equatable {
         processIdentifier: pid_t,
         contextKind: InsertionContextKind = .axFocusedElement,
         capabilityProfile: ApplicationCapabilityProfile = .partialAXEditor,
+        browserMetadata: BrowserTargetMetadata? = nil,
         role: String?,
         subrole: String?,
         roleDescription: String?,
@@ -204,6 +206,7 @@ struct TargetCapabilities: Equatable {
         self.processIdentifier = processIdentifier
         self.contextKind = contextKind
         self.capabilityProfile = capabilityProfile
+        self.browserMetadata = browserMetadata
         self.role = role
         self.subrole = subrole
         self.roleDescription = roleDescription
@@ -1319,12 +1322,29 @@ struct TextInsertionService: TextInsertionServicing {
         case .application(let target):
             let profile = capabilityProfile(for: target.bundleIdentifier, applicationName: target.applicationName)
             let pasteCompatible = profile == .opaquePasteCapable
+            let browserMetadata = browserMetadata(
+                bundleIdentifier: target.bundleIdentifier,
+                applicationName: target.applicationName,
+                contextKind: .appOnly,
+                role: nil,
+                subrole: nil,
+                roleDescription: nil,
+                title: nil,
+                identifier: nil,
+                placeholderValue: nil,
+                domIdentifier: nil,
+                valueReadable: false,
+                valueSettable: false,
+                editable: false,
+                secure: false
+            )
             return TargetCapabilities(
                 applicationName: target.applicationName,
                 bundleIdentifier: target.bundleIdentifier,
                 processIdentifier: target.processIdentifier,
                 contextKind: .appOnly,
                 capabilityProfile: profile,
+                browserMetadata: browserMetadata,
                 role: nil,
                 subrole: nil,
                 roleDescription: nil,
@@ -1392,6 +1412,22 @@ struct TextInsertionService: TextInsertionServicing {
             directInsertCompatible: directInsertCompatible,
             editable: editable
         )
+        let browserMetadata = browserMetadata(
+            bundleIdentifier: application?.bundleIdentifier,
+            applicationName: application?.localizedName ?? "Unknown",
+            contextKind: .axFocusedElement,
+            role: role,
+            subrole: subrole,
+            roleDescription: roleDescription,
+            title: metadata.title,
+            identifier: metadata.identifier,
+            placeholderValue: metadata.placeholderValue,
+            domIdentifier: metadata.domIdentifier,
+            valueReadable: valueReadable,
+            valueSettable: valueSettable,
+            editable: editable,
+            secure: secure
+        )
 
         return TargetCapabilities(
             applicationName: application?.localizedName ?? "Unknown",
@@ -1399,6 +1435,7 @@ struct TextInsertionService: TextInsertionServicing {
             processIdentifier: target.processIdentifier,
             contextKind: .axFocusedElement,
             capabilityProfile: profile,
+            browserMetadata: browserMetadata,
             role: role,
             subrole: subrole,
             roleDescription: roleDescription,
@@ -1858,6 +1895,76 @@ struct TextInsertionService: TextInsertionServicing {
         }
 
         return .unknownConservative
+    }
+
+    private func browserMetadata(
+        bundleIdentifier: String?,
+        applicationName: String,
+        contextKind: InsertionContextKind,
+        role: String?,
+        subrole: String?,
+        roleDescription: String?,
+        title: String?,
+        identifier: String?,
+        placeholderValue: String?,
+        domIdentifier: String?,
+        valueReadable: Bool,
+        valueSettable: Bool,
+        editable: Bool,
+        secure: Bool
+    ) -> BrowserTargetMetadata? {
+        guard let browser = BrowserHostApplication.detect(
+            bundleIdentifier: bundleIdentifier,
+            applicationName: applicationName
+        ) else {
+            return nil
+        }
+
+        let editorFamily = BrowserTargetClassifier.editorFamily(
+            role: role,
+            subrole: subrole,
+            roleDescription: roleDescription,
+            title: title,
+            identifier: identifier,
+            placeholderValue: placeholderValue,
+            domIdentifier: domIdentifier,
+            secure: secure
+        )
+        let targetClass = BrowserTargetClassifier.targetClass(
+            editorFamily: editorFamily,
+            contextKind: contextKind,
+            secure: secure
+        )
+        let verificationMode = BrowserTargetClassifier.verificationMode(
+            targetClass: targetClass,
+            valueReadable: valueReadable,
+            valueSettable: valueSettable,
+            editable: editable
+        )
+        let fingerprint = BrowserTargetClassifier.fingerprint(
+            role: role,
+            title: title,
+            identifier: identifier,
+            placeholderValue: placeholderValue,
+            domIdentifier: domIdentifier
+        )
+
+        return BrowserTargetMetadata(
+            browser: browser,
+            targetClass: targetClass,
+            editorFamily: editorFamily,
+            verificationMode: verificationMode,
+            pageOrigin: nil,
+            pageTitle: nil,
+            framePath: nil,
+            frameIdentifier: nil,
+            targetFingerprint: fingerprint,
+            operationID: nil,
+            focusCapturedAt: nil,
+            focusValidatedAt: nil,
+            protocolVersion: nil,
+            extensionVersion: nil
+        )
     }
 
     private func isEditableTarget(

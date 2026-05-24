@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Iframe Fixture Editor</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: "Avenir Next", "Helvetica Neue", sans-serif;
+        background: #ffffff;
+        color: #1f1d1a;
+      }
+
+      main {
+        padding: 18px;
+      }
+
+      .editor {
+        min-height: 180px;
+        border: 1px solid #d8ccbf;
+        border-radius: 14px;
+        padding: 14px 16px;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>Same-origin iframe fixture.</p>
+      <div
+        id="iframe-rich-editor"
+        class="editor"
+        role="textbox"
+        aria-label="Iframe Fixture Composer"
+        contenteditable="true"
+      >Click here and dictate into the iframe editor.</div>
+    </main>
+  </body>
+</html>
